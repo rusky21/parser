@@ -5,22 +5,22 @@ title LeadHunter Pro
 set "VENV_DIR=%~dp0.venv"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 
-REM Check if virtual environment exists and has required packages installed
-if exist "%VENV_PYTHON%" (
-    "%VENV_PYTHON%" -c "import uvicorn, fastapi, playwright" >nul 2>&1
-    if not errorlevel 1 goto :run_app
+REM If venv doesn't exist, go to setup
+if not exist "%VENV_PYTHON%" goto :setup_venv
 
-    REM Check if pip inside .venv is functional
-    "%VENV_PYTHON%" -m pip --version >nul 2>&1
-    if not errorlevel 1 (
-        echo [*] Virtual environment found. Installing missing packages...
-        goto :install_deps
-    )
+REM 1. Check if all required packages are present and working
+"%VENV_PYTHON%" -c "import uvicorn, fastapi, playwright" >nul 2>&1
+if not errorlevel 1 goto :run_app
 
-    echo [!] Virtual environment .venv is corrupted (pip is damaged).
-    echo [*] Automatically re-creating virtual environment from scratch...
-    rmdir /s /q "%VENV_DIR%" >nul 2>&1
-)
+REM 2. If pip inside venv is alive, just install packages
+"%VENV_PYTHON%" -m pip --version >nul 2>&1
+if not errorlevel 1 goto :install_deps
+
+REM 3. If pip is corrupted, delete broken .venv and rebuild
+echo [!] Virtual environment .venv is corrupted.
+echo [*] Automatically re-creating virtual environment from scratch...
+rmdir /s /q "%VENV_DIR%" >nul 2>&1
+goto :setup_venv
 
 :setup_venv
 echo ======================================================================
