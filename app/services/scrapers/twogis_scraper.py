@@ -118,22 +118,40 @@ class TwoGisScraper(BaseScraper):
             # Перехват сетевых JSON ответов 2ГИС
             async def handle_response(resp):
                 url = resp.url
-                if ("items" in url or "search" in url) and len(results) < limit and not is_cancelled():
+                if ("items" in url or "search" in url or "byid" in url or "firm" in url or "profile" in url) and len(results) < limit and not is_cancelled():
                     try:
                         ct = resp.headers.get("content-type", "")
                         if "json" in ct:
                             data = await resp.json()
                             items = data.get("result", {}).get("items", [])
+                            if not items and "item" in data.get("result", {}):
+                                single = data["result"]["item"]
+                                if isinstance(single, dict):
+                                    items = [single]
                             for it in items:
                                 if len(results) >= limit or is_cancelled():
                                     break
                                 it_id = str(it.get("id", ""))
-                                if it_id and it_id not in seen_ids:
-                                    parsed = self._parse_api_item(it)
-                                    if parsed:
-                                        seen_ids.add(it_id)
-                                        results.append(parsed)
-                                        asyncio.create_task(on_item_scraped(parsed))
+                                if not it_id:
+                                    continue
+                                parsed = self._parse_api_item(it)
+                                if not parsed:
+                                    continue
+                                if it_id not in seen_ids:
+                                    seen_ids.add(it_id)
+                                    results.append(parsed)
+                                    asyncio.create_task(on_item_scraped(parsed))
+                                else:
+                                    # Если организация уже в списке, но пришел более детальный профиль (с телефонами/сайтом) — обновляем!
+                                    for ex in results:
+                                        if ex.external_id == it_id or (ex.card_url and it_id in ex.card_url):
+                                            if not ex.phones and parsed.phones:
+                                                ex.phones = parsed.phones
+                                            if not ex.website and parsed.website:
+                                                ex.website = parsed.website
+                                            if not ex.address and parsed.address:
+                                                ex.address = parsed.address
+                                            break
                     except Exception:
                         pass
 
@@ -148,7 +166,7 @@ class TwoGisScraper(BaseScraper):
             if not captcha_ok or is_cancelled():
                 return
 
-            # Парсинг карточек из DOM
+            # Парсинг и дообогащение карточек из DOM
             no_new_counter = 0
             while len(results) < limit and not is_cancelled():
                 prev_len = len(results)
@@ -161,101 +179,111 @@ class TwoGisScraper(BaseScraper):
                     try:
                         href = await fl.get_attribute("href") or ""
                         match = re.search(r"/firm/(\d+)", href)
-                        if not match:
-                            continue
-                        firm_id = match.group(1)
-                        if firm_id in seen_ids:
+                        firm_id = match.group(1) if match else None
+
+                        # Находим уже спарсенную организацию (если она пришла из сети)
+                        target_item = None
+                        if firm_id:
+                            for res in results:
+                                if res.external_id == firm_id or (res.card_url and firm_id in res.card_url):
+                                    target_item = res
+                                    break
+
+                        # Если у организации уже есть телефон И сайт — не тратим время на клик
+                        if target_item and target_item.phones and target_item.website:
                             continue
 
-                        # Название
-                        name_text = (await fl.inner_text()).strip()
+                        # Кликаем по карточке, чтобы 2ГИС открыл правый сайдбар с контактами
+                        try:
+                            await fl.click(timeout=1500)
+                            await asyncio.sleep(0.4)
+                            # Проверяем кнопку "Показать контакты" / "Показать телефон"
+                            show_btn = await page.query_selector("button:has-text('Показать контакты'), button:has-text('Показать телефон'), button:has-text('Контакты')")
+                            if show_btn and await show_btn.is_visible():
+                                await show_btn.click(timeout=800)
+                                await asyncio.sleep(0.2)
+                        except Exception:
+                            pass
+
+                        # Извлекаем контакты из открывшейся боковой панели
+                        extracted_phones = []
+                        tel_links = await page.query_selector_all("a[href^='tel:']")
+                        for tl in tel_links:
+                            thref = await tl.get_attribute("href") or ""
+                            clean_p = self._normalize_phone(thref.replace("tel:", ""))
+                            if clean_p and clean_p not in extracted_phones:
+                                extracted_phones.append(clean_p)
+
+                        # Если телефонов нет по ссылкам tel:, ищем в тексте правого сайдбара
+                        if not extracted_phones:
+                            sidebar_text = await page.evaluate("""() => {
+                                const panels = document.querySelectorAll('div[class*=\"sidebar\"], div[class*=\"card\"], div[class*=\"profile\"]');
+                                let text = '';
+                                panels.forEach(p => text += ' ' + p.innerText);
+                                return text;
+                            }""")
+                            raw_phones = re.findall(r"(?:\+7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}", sidebar_text or "")
+                            for p in raw_phones:
+                                cl = self._normalize_phone(p)
+                                if cl and cl not in extracted_phones:
+                                    extracted_phones.append(cl)
+
+                        # Извлекаем сайт
+                        extracted_website = None
+                        site_links = await page.query_selector_all("a[href*='2gis.ru/away'], a[class*='contact'][href^='http'], a[target='_blank'][href^='http']")
+                        for sl in site_links:
+                            shref = await sl.get_attribute("href") or ""
+                            if "2gis.ru/away" in shref or "to=" in shref:
+                                parsed_to = urllib.parse.parse_qs(urllib.parse.urlparse(shref).query).get("to", [""])[0]
+                                if parsed_to and "google" not in parsed_to and "2gis" not in parsed_to:
+                                    extracted_website = parsed_to
+                                    break
+                            elif shref.startswith("http") and not any(ign in shref for ign in ("2gis.ru", "google.com", "yandex.ru", "vk.com/away")):
+                                extracted_website = shref
+                                break
+
+                        # Извлекаем адрес из сайдбара
+                        extracted_address = None
+                        addr_el = await page.query_selector("a[href*='/geo/'], div[class*='address']")
+                        if addr_el:
+                            extracted_address = (await addr_el.inner_text() or "").strip()
+
+                        # Обновляем существующий объект
+                        if target_item:
+                            if extracted_phones and not target_item.phones:
+                                target_item.phones = extracted_phones
+                            if extracted_website and not target_item.website:
+                                target_item.website = extracted_website
+                            if extracted_address and not target_item.address:
+                                target_item.address = extracted_address
+                            continue
+
+                        # Иначе создаем новый объект
+                        name_text = (await fl.inner_text()).strip().split("\n")[0].strip()
                         if not name_text or len(name_text) < 2:
                             continue
 
-                        # Берем первую строку как название
-                        name = name_text.split("\n")[0].strip()
+                        card_id = firm_id or str(hash(name_text))
+                        if card_id in seen_ids:
+                            continue
 
-                        # Адрес и доп информация из родительского блока карточки
-                        card_parent = await fl.evaluate_handle("el => el.closest('div[class*=\"searchBar\"], div[class*=\"miniCard\"], div[class*=\"item\"], div')")
-                        card_text = (await card_parent.inner_text()) if card_parent else name_text
-
-                        # Телефоны
-                        phones = []
-                        raw_phones = re.findall(r"(?:\+7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}", card_text)
-                        for p in raw_phones:
-                            cl = self._normalize_phone(p)
-                            if cl and cl not in phones:
-                                phones.append(cl)
-
-                        # Извлечение рейтинга и отзывов
-                        rating = 0.0
-                        reviews_count = 0
-                        rate_match = re.search(r"(\b[1-5][.,]\d\b)", card_text)
-                        if rate_match:
-                            try:
-                                rating = float(rate_match.group(1).replace(",", "."))
-                            except Exception:
-                                pass
-                        rev_match = re.search(r"(\d+)\s*(?:отзыв|оцен)", card_text, re.IGNORECASE)
-                        if rev_match:
-                            try:
-                                reviews_count = int(rev_match.group(1))
-                            except Exception:
-                                pass
-
-                        # Извлечение адреса
-                        address = None
-                        lines = [l.strip() for l in card_text.split("\n") if l.strip()]
-                        for line in lines[1:]:
-                            if any(kw in line.lower() for kw in ("ул.", "улица", "пр-кт", "проспект", "пер.", "переулок", "д.", "дом", "шоссе", "наб.", "тракт", "корп", "строение", "этаж")):
-                                address = line
-                                break
-                        if not address and len(lines) > 2:
-                            for candidate in lines[1:4]:
-                                if len(candidate) > 5 and not any(ch in candidate for ch in "+78(") and not re.search(r"^\d", candidate):
-                                    address = candidate
-                                    break
-
-                        # Извлечение сайта (внешняя ссылка или домен в тексте)
-                        website = None
-                        if card_parent:
-                            try:
-                                ext_links = await card_parent.query_selector_all("a[href]")
-                                for el in ext_links:
-                                    h = (await el.get_attribute("href") or "").strip()
-                                    if "2gis.ru/away" in h or "to=" in h:
-                                        parsed_to = urllib.parse.parse_qs(urllib.parse.urlparse(h).query).get("to", [""])[0]
-                                        if parsed_to:
-                                            website = parsed_to
-                                            break
-                                    elif h.startswith("http") and "2gis.ru" not in h and "google" not in h:
-                                        website = h
-                                        break
-                            except Exception:
-                                pass
-
-                        if not website:
-                            web_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:ru|com|рф|pro|org|net|site|online|io))\b", card_text, re.IGNORECASE)
-                            if web_match:
-                                website = f"https://{web_match.group(1)}"
-
-                        seen_ids.add(firm_id)
-                        org_item = ScrapedOrgItem(
+                        new_org = ScrapedOrgItem(
                             source="2gis",
-                            external_id=firm_id,
-                            name=name,
+                            external_id=card_id,
+                            name=name_text,
                             category=niche,
-                            address=address,
-                            rating=rating,
-                            reviews_count=reviews_count,
-                            phones=phones,
-                            website=website,
-                            card_url=f"https://2gis.ru/firm/{firm_id}"
+                            address=extracted_address,
+                            rating=0.0,
+                            reviews_count=0,
+                            phones=extracted_phones,
+                            website=extracted_website,
+                            card_url=f"https://2gis.ru/firm/{card_id}" if firm_id else href
                         )
-                        results.append(org_item)
-                        await on_item_scraped(org_item)
+                        seen_ids.add(card_id)
+                        results.append(new_org)
+                        await on_item_scraped(new_org)
                     except Exception as item_err:
-                        logger.debug(f"Error parsing 2GIS card: {item_err}")
+                        logger.debug(f"Error extracting 2GIS card details: {item_err}")
                         continue
 
                 # Скроллим список выдачи
@@ -295,33 +323,71 @@ class TwoGisScraper(BaseScraper):
 
         # Рубрика
         rubrics = item.get("rubrics", [])
-        category = rubrics[0].get("name") if rubrics else None
-        if not category and "name_ex" in item:
+        category = rubrics[0].get("name") if rubrics and isinstance(rubrics[0], dict) else None
+        if not category and "name_ex" in item and isinstance(item["name_ex"], dict):
             category = item["name_ex"].get("extension")
 
-        address = item.get("address_name")
+        # Адрес (проверяем все возможные варианты структуры 2ГИС)
+        address = (
+            item.get("address_name")
+            or item.get("full_address_name")
+            or (item.get("address") if isinstance(item.get("address"), str) else None)
+            or (item.get("address", {}).get("building_name") if isinstance(item.get("address"), dict) else None)
+            or (item.get("address", {}).get("name") if isinstance(item.get("address"), dict) else None)
+            or item.get("address_comment")
+            or item.get("caption")
+            or item.get("subtitle")
+        )
+        if not address and "adm_div" in item and isinstance(item["adm_div"], list):
+            parts = [d.get("name") for d in item["adm_div"] if isinstance(d, dict) and d.get("name")]
+            if parts:
+                address = ", ".join(parts)
 
         # Рейтинг и отзывы
         reviews = item.get("reviews", {})
-        rating = float(reviews.get("general_rating", 0.0) or 0.0)
-        reviews_count = int(reviews.get("general_review_count", 0) or 0)
+        rating = 0.0
+        reviews_count = 0
+        if isinstance(reviews, dict):
+            rating = float(reviews.get("general_rating", 0.0) or 0.0)
+            reviews_count = int(reviews.get("general_review_count", 0) or 0)
+        elif "rating" in item and isinstance(item["rating"], dict):
+            rating = float(item["rating"].get("rating", 0.0) or 0.0)
+            reviews_count = int(item["rating"].get("review_count", 0) or 0)
 
         # Контакты
         phones = []
         website = None
 
-        contact_groups = item.get("contact_groups", [])
-        for cg in contact_groups:
+        contact_groups = item.get("contact_groups", []) or (item.get("org", {}).get("contact_groups", []) if isinstance(item.get("org"), dict) else [])
+        for cg in (contact_groups or []):
+            if not isinstance(cg, dict):
+                continue
             for contact in cg.get("contacts", []):
+                if not isinstance(contact, dict):
+                    continue
                 c_type = contact.get("type", "")
-                if c_type == "phone":
+                if c_type in ("phone", "contacts"):
                     phone_val = contact.get("text") or contact.get("value")
                     clean_p = self._normalize_phone(phone_val)
                     if clean_p and clean_p not in phones:
                         phones.append(clean_p)
-                elif c_type in ("website", "url"):
+                elif c_type in ("website", "url", "site"):
                     if not website:
                         website = contact.get("url") or contact.get("text")
+
+        # Дополнительный поиск ссылок на сайты в item
+        if not website:
+            for lk in (item.get("links", []) or []):
+                if isinstance(lk, dict):
+                    url_val = lk.get("url") or lk.get("href")
+                    if url_val and not any(ign in url_val for ign in ("2gis.ru", "google")):
+                        website = url_val
+                        break
+        if not website and "external_content" in item and isinstance(item["external_content"], list):
+            for ec in item["external_content"]:
+                if isinstance(ec, dict) and ec.get("url") and not any(ign in ec.get("url") for ign in ("2gis.ru", "google")):
+                    website = ec["url"]
+                    break
 
         return ScrapedOrgItem(
             source="2gis",
