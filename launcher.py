@@ -2,12 +2,26 @@ import os
 import sys
 import webbrowser
 import asyncio
+from pathlib import Path
 
 # Принудительная установка UTF-8 для консоли Windows
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding='utf-8')
         sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+BASE_DIR = Path(__file__).resolve().parent
+
+# Автоматический перезапуск в .venv, если скрипт запущен глобальным Python
+venv_py = BASE_DIR / ".venv" / ("Scripts" if sys.platform == "win32" else "bin") / ("python.exe" if sys.platform == "win32" else "python")
+if venv_py.exists() and sys.executable.lower() != str(venv_py).lower():
+    try:
+        import subprocess
+        check = subprocess.run([str(venv_py), "-c", "import uvicorn"], capture_output=True)
+        if check.returncode == 0:
+            os.execv(str(venv_py), [str(venv_py)] + sys.argv)
     except Exception:
         pass
 

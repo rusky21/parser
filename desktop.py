@@ -44,8 +44,13 @@ def wait_for_server(proc: subprocess.Popen = None, timeout: float = 15.0) -> boo
     return False
 
 def launch_backend_process() -> subprocess.Popen:
-    """Запускает backend сервер run.py в отдельном процессе"""
-    python_exe = sys.executable
+    """Запускает backend сервер run.py в отдельном процессе с приоритетом .venv"""
+    venv_py = BASE_DIR / ".venv" / ("Scripts" if sys.platform == "win32" else "bin") / ("python.exe" if sys.platform == "win32" else "python")
+    if venv_py.exists():
+        python_exe = str(venv_py)
+    else:
+        python_exe = sys.executable
+    
     run_py = str(BASE_DIR / "run.py")
     
     proc = subprocess.Popen(

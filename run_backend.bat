@@ -5,13 +5,12 @@ title LeadHunter Backend API
 set "VENV_DIR=%~dp0.venv"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 
-REM Check if virtual environment exists and is functional on THIS machine
+REM Check if virtual environment exists and has required packages installed
 if exist "%VENV_PYTHON%" (
-    "%VENV_PYTHON%" --version >nul 2>&1
+    "%VENV_PYTHON%" -c "import uvicorn, fastapi, playwright" >nul 2>&1
     if not errorlevel 1 goto :run_app
-    echo [!] Virtual environment is not compatible with this PC or is corrupted.
-    echo [*] Re-creating virtual environment for your machine...
-    rmdir /s /q "%VENV_DIR%" >nul 2>&1
+    echo [*] Virtual environment found, but required packages are missing or incomplete.
+    goto :install_deps
 )
 
 :setup_venv
@@ -45,6 +44,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+:install_deps
 echo [*] Installing required packages from requirements.txt...
 "%VENV_PYTHON%" -m pip install -r requirements.txt
 if %errorlevel% neq 0 (
