@@ -22,18 +22,22 @@ def check_playwright():
         print("[!] Библиотека playwright не установлена. Установите зависимости: pip install -r requirements.txt")
 
 def main():
+    import os
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", 8000))
+
     print("=" * 60)
     print(" 🚀 LeadHunter & Audit Backend API")
     print("=" * 60)
-    print(" • Сервер запускается на: http://127.0.0.1:8000")
-    print(" • Документация Swagger UI: http://127.0.0.1:8000/docs")
-    print(" • WebSocket поток событий: ws://127.0.0.1:8000/ws/{campaign_id}")
+    print(f" • Сервер запускается на: http://{host}:{port}")
+    print(f" • Документация Swagger UI: http://{host}:{port}/docs")
+    print(f" • WebSocket поток событий: ws://{host}:{port}/ws/{{campaign_id}}")
     print("=" * 60)
 
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
-        port=8000,
+        host=host,
+        port=port,
         reload=False,
         loop="asyncio.windows_events:ProactorEventLoop" if sys.platform == "win32" else "auto"
     )

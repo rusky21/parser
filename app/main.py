@@ -82,7 +82,7 @@ async def health_check():
 # Раздача фронтенда из собранной папки фронт/dist
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 _candidates = [
     Path(__file__).resolve().parent.parent / "фронт" / "dist",
@@ -104,4 +104,34 @@ if FRONTEND_DIST.exists():
         if full_path and file_candidate.is_file():
             return FileResponse(file_candidate)
         return FileResponse(FRONTEND_DIST / "index.html")
+else:
+    @app.get("/")
+    async def fallback_no_frontend():
+        return HTMLResponse("""
+        <!DOCTYPE html>
+        <html lang="ru">
+        <head>
+            <meta charset="UTF-8">
+            <title>LeadHunter Pro — API Backend</title>
+            <style>
+                body { background: #0B0F19; color: #f1f5f9; font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+                .card { background: #131B2E; border: 1px solid #1E293B; border-radius: 16px; padding: 40px; max-width: 600px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+                h1 { color: #38BDF8; font-size: 24px; margin-bottom: 12px; }
+                p { color: #94A3B8; font-size: 15px; line-height: 1.6; }
+                a.btn { display: inline-block; background: #2563EB; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; margin-top: 16px; transition: background 0.2s; }
+                a.btn:hover { background: #1D4ED8; }
+                code { background: #0F172A; padding: 4px 8px; border-radius: 6px; color: #38BDF8; font-size: 13px; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>🎯 LeadHunter Pro — Бэкенд запущен</h1>
+                <p>Бэкенд-сервер и API работают в штатном режиме.<br>Статический бандл фронтенда еще не был собран.</p>
+                <a class="btn" href="/docs">Открыть Swagger API документацию</a>
+                <p style="margin-top: 24px; font-size: 13px;">Для сборки веб-интерфейса выполните в терминале:<br><code>cd фронт && npm install && npm run build</code></p>
+            </div>
+        </body>
+        </html>
+        """)
+
 

@@ -101,31 +101,40 @@ def run_desktop_app():
     except Exception as e:
         print(f" [!] PyWebView не смог запуститься ({e}). Запускаем fallback-режим...")
 
-    # Резервный режим (если WebView2 недоступен): запуск в режиме App без рамок браузера
+    # Резервный режим (если pywebview недоступен): запуск в режиме App без рамок браузера
     if not pywebview_success:
         opened = False
         import shutil
 
         candidate_browsers = []
-        for name in ("msedge", "chrome", "google-chrome"):
+        for name in ("msedge", "chrome", "google-chrome", "chromium", "chromium-browser", "brave-browser", "microsoft-edge"):
             found = shutil.which(name)
             if found:
                 candidate_browsers.append(found)
 
-        # Стандартные пути Windows для Edge и Chrome через переменные окружения текущего пользователя и системы
-        prog_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
-        prog_files_x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if sys.platform == "win32":
+            prog_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+            prog_files_x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
 
-        for base_p in (prog_files, prog_files_x86, local_app_data):
-            if base_p:
-                candidate_browsers.extend([
-                    os.path.join(base_p, "Microsoft", "Edge", "Application", "msedge.exe"),
-                    os.path.join(base_p, "Google", "Chrome", "Application", "chrome.exe"),
-                ])
+            for base_p in (prog_files, prog_files_x86, local_app_data):
+                if base_p:
+                    candidate_browsers.extend([
+                        os.path.join(base_p, "Microsoft", "Edge", "Application", "msedge.exe"),
+                        os.path.join(base_p, "Google", "Chrome", "Application", "chrome.exe"),
+                    ])
+        elif sys.platform == "darwin":
+            mac_paths = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            ]
+            for p in mac_paths:
+                if os.path.exists(p):
+                    candidate_browsers.append(p)
 
         for browser_cmd in candidate_browsers:
-            if os.path.exists(browser_cmd):
+            if os.path.exists(browser_cmd) or shutil.which(browser_cmd):
                 try:
                     subprocess.Popen([browser_cmd, f"--app={SERVER_URL}"])
                     opened = True

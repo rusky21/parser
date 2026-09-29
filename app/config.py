@@ -19,3 +19,10 @@ DEFAULT_TIMEOUT_CONNECT = 5.0
 DEFAULT_TIMEOUT_READ = 7.0
 MAX_AUDIT_WORKERS = 8
 CAPTCHA_TIMEOUT_SECONDS = 180  # 3 минуты ожидания ручного прохождения капчи
+
+# Режим headless для браузера Playwright (автоматически True для Linux без GUI и серверов/Docker)
+import sys
+HEADLESS = os.environ.get("HEADLESS", "").lower() in ("true", "1")
+if sys.platform != "win32" and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+    HEADLESS = True
+

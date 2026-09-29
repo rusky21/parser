@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Optional
 from sqlalchemy import select, update
 
+from app.config import HEADLESS
 from app.db.database import async_session_factory
 from app.db.models import SearchCampaign, Organization, AuditResult, utc_now
 from app.services.scrapers.base import ScrapedOrgItem
@@ -254,7 +255,7 @@ class TaskManager:
         try:
             # Запуск скрейперов в зависимости от выбранного источника
             if source == "yandex":
-                ctx.active_yandex_scraper = YandexScraper(headless=False)
+                ctx.active_yandex_scraper = YandexScraper(headless=HEADLESS)
                 await ctx.active_yandex_scraper.scrape(
                     niche=niche,
                     city=city,
@@ -265,7 +266,7 @@ class TaskManager:
                     is_cancelled=lambda: ctx.is_cancelled or collected_count >= limit
                 )
             elif source == "2gis":
-                ctx.active_twogis_scraper = TwoGisScraper()
+                ctx.active_twogis_scraper = TwoGisScraper(headless=HEADLESS)
                 await ctx.active_twogis_scraper.scrape(
                     niche=niche,
                     city=city,
@@ -277,7 +278,7 @@ class TaskManager:
                 )
             else:  # "all"
                 half_limit = (limit + 1) // 2
-                ctx.active_twogis_scraper = TwoGisScraper()
+                ctx.active_twogis_scraper = TwoGisScraper(headless=HEADLESS)
                 await ctx.active_twogis_scraper.scrape(
                     niche=niche,
                     city=city,
@@ -290,7 +291,7 @@ class TaskManager:
 
                 remaining = limit - collected_count
                 if remaining > 0 and not ctx.is_cancelled:
-                    ctx.active_yandex_scraper = YandexScraper(headless=False)
+                    ctx.active_yandex_scraper = YandexScraper(headless=HEADLESS)
                     await ctx.active_yandex_scraper.scrape(
                         niche=niche,
                         city=city,

@@ -1,0 +1,16 @@
+services:
+  leadhunter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: leadhunter-pro
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HEADLESS=1
+      - PORT=8000
+    volumes:
+      - ./leadhunter.db:/app/leadhunter.db
+      - ./exports:/app/exports
+      - ./browser_profile:/app/browser_profile

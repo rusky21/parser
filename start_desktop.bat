@@ -54,7 +54,7 @@ if %errorlevel% neq 0 (
 )
 
 echo [*] Downloading Chromium browser for maps scraping...
-"%VENV_DIR%\Scripts\playwright.exe" install chromium
+"%VENV_PYTHON%" -m playwright install chromium
 echo [OK] Setup completed successfully!
 echo ======================================================================
 
