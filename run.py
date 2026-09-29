@@ -34,13 +34,26 @@ def main():
     print(f" • WebSocket поток событий: ws://{host}:{port}/ws/{{campaign_id}}")
     print("=" * 60)
 
-    uvicorn.run(
-        "app.main:app",
-        host=host,
-        port=port,
-        reload=False,
-        loop="asyncio.windows_events:ProactorEventLoop" if sys.platform == "win32" else "auto"
-    )
+    try:
+        uvicorn.run(
+            "app.main:app",
+            host=host,
+            port=port,
+            reload=False,
+            loop="asyncio.windows_events:ProactorEventLoop" if sys.platform == "win32" else "auto"
+        )
+    except OSError as e:
+        if "10048" in str(e) or "address already in use" in str(e).lower():
+            print(f"\n[ОШИБКА] Порт {port} уже занят другим приложением на вашем ПК!")
+            print(f"Освободите порт {port} или задайте другой через переменную окружения PORT (например, PORT=8080).")
+        else:
+            print(f"\n[ОШИБКА СЕТИ] {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n[КРИТИЧЕСКАЯ ОШИБКА БЭКЕНДА] {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

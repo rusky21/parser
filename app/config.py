@@ -4,8 +4,8 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # База данных SQLite
-DB_PATH = BASE_DIR / "leadhunter.db"
-DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH}"
+DB_PATH = (BASE_DIR / "leadhunter.db").resolve()
+DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH.as_posix()}"
 
 # Директория для профилей браузера и экспорта
 EXPORTS_DIR = BASE_DIR / "exports"

@@ -24,8 +24,11 @@ ICON_PATH = str(BASE_DIR / "app_icon.ico")
 
 def is_server_running(url: str = HEALTH_URL, timeout: float = 1.0) -> bool:
     try:
+        # Обход системных прокси (VPN/прокси не должны влиять на 127.0.0.1)
+        proxy_handler = urllib.request.ProxyHandler({})
+        opener = urllib.request.build_opener(proxy_handler)
         req = urllib.request.Request(url, headers={"User-Agent": "LeadHunterDesktop"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -63,10 +66,13 @@ def run_desktop_app():
         print(" [*] Инициализация локального сервера LeadHunter...")
         server_process = launch_backend_process()
         if not wait_for_server(proc=server_process, timeout=15.0):
-            print(" [!] Ошибка: Сервер не ответил за 15 секунд.")
+            print("\n [!] Ошибка: Сервер не ответил за 15 секунд.")
+            if server_process and server_process.poll() is not None:
+                print(f" [!] Процесс сервера завершился с кодом ошибки: {server_process.poll()}")
+            print(" [!] Подсказка: запустите run_backend.bat, чтобы увидеть точный текст ошибки.")
             if server_process:
                 server_process.kill()
-            sys.exit(1)
+            return
         print(f" [✓] Сервер успешно запущен на {SERVER_URL}")
 
     print(" [*] Открытие нативного окна десктопного приложения...")
