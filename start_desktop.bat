@@ -9,8 +9,17 @@ REM Check if virtual environment exists and has required packages installed
 if exist "%VENV_PYTHON%" (
     "%VENV_PYTHON%" -c "import uvicorn, fastapi, playwright" >nul 2>&1
     if not errorlevel 1 goto :run_app
-    echo [*] Virtual environment found, but required packages are missing or incomplete.
-    goto :install_deps
+
+    REM Check if pip inside .venv is functional
+    "%VENV_PYTHON%" -m pip --version >nul 2>&1
+    if not errorlevel 1 (
+        echo [*] Virtual environment found. Installing missing packages...
+        goto :install_deps
+    )
+
+    echo [!] Virtual environment .venv is corrupted (pip is damaged).
+    echo [*] Automatically re-creating virtual environment from scratch...
+    rmdir /s /q "%VENV_DIR%" >nul 2>&1
 )
 
 :setup_venv
@@ -48,7 +57,14 @@ if %errorlevel% neq 0 (
 echo [*] Installing required packages: FastAPI, Playwright, PyWebView...
 "%VENV_PYTHON%" -m pip install -r requirements.txt
 if %errorlevel% neq 0 (
-    echo [ERROR] Failed to install requirements. Please check internet connection.
+    echo [!] Initial pip install failed. Repairing pip and retrying...
+    "%VENV_PYTHON%" -m ensurepip --default-pip >nul 2>&1
+    "%VENV_PYTHON%" -m pip install -r requirements.txt
+)
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Failed to install requirements.
+    echo Please delete the .venv folder manually and run start_desktop.bat again.
     pause
     exit /b 1
 )
