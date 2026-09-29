@@ -175,9 +175,9 @@ class TwoGisScraper(BaseScraper):
                         # Берем первую строку как название
                         name = name_text.split("\n")[0].strip()
 
-                        # Адрес и доп информация из родительского блока
-                        card_parent = await fl.evaluate_handle("el => el.closest('div[class*=\"searchBar\"], div[class*=\"miniCard\"], div')")
-                        card_text = (await card_parent.inner_text()) if card_parent else ""
+                        # Адрес и доп информация из родительского блока карточки
+                        card_parent = await fl.evaluate_handle("el => el.closest('div[class*=\"searchBar\"], div[class*=\"miniCard\"], div[class*=\"item\"], div')")
+                        card_text = (await card_parent.inner_text()) if card_parent else name_text
 
                         # Телефоны
                         phones = []
@@ -187,22 +187,75 @@ class TwoGisScraper(BaseScraper):
                             if cl and cl not in phones:
                                 phones.append(cl)
 
+                        # Извлечение рейтинга и отзывов
+                        rating = 0.0
+                        reviews_count = 0
+                        rate_match = re.search(r"(\b[1-5][.,]\d\b)", card_text)
+                        if rate_match:
+                            try:
+                                rating = float(rate_match.group(1).replace(",", "."))
+                            except Exception:
+                                pass
+                        rev_match = re.search(r"(\d+)\s*(?:отзыв|оцен)", card_text, re.IGNORECASE)
+                        if rev_match:
+                            try:
+                                reviews_count = int(rev_match.group(1))
+                            except Exception:
+                                pass
+
+                        # Извлечение адреса
+                        address = None
+                        lines = [l.strip() for l in card_text.split("\n") if l.strip()]
+                        for line in lines[1:]:
+                            if any(kw in line.lower() for kw in ("ул.", "улица", "пр-кт", "проспект", "пер.", "переулок", "д.", "дом", "шоссе", "наб.", "тракт", "корп", "строение", "этаж")):
+                                address = line
+                                break
+                        if not address and len(lines) > 2:
+                            for candidate in lines[1:4]:
+                                if len(candidate) > 5 and not any(ch in candidate for ch in "+78(") and not re.search(r"^\d", candidate):
+                                    address = candidate
+                                    break
+
+                        # Извлечение сайта (внешняя ссылка или домен в тексте)
+                        website = None
+                        if card_parent:
+                            try:
+                                ext_links = await card_parent.query_selector_all("a[href]")
+                                for el in ext_links:
+                                    h = (await el.get_attribute("href") or "").strip()
+                                    if "2gis.ru/away" in h or "to=" in h:
+                                        parsed_to = urllib.parse.parse_qs(urllib.parse.urlparse(h).query).get("to", [""])[0]
+                                        if parsed_to:
+                                            website = parsed_to
+                                            break
+                                    elif h.startswith("http") and "2gis.ru" not in h and "google" not in h:
+                                        website = h
+                                        break
+                            except Exception:
+                                pass
+
+                        if not website:
+                            web_match = re.search(r"\b([a-zA-Z0-9-]+\.(?:ru|com|рф|pro|org|net|site|online|io))\b", card_text, re.IGNORECASE)
+                            if web_match:
+                                website = f"https://{web_match.group(1)}"
+
                         seen_ids.add(firm_id)
                         org_item = ScrapedOrgItem(
                             source="2gis",
                             external_id=firm_id,
                             name=name,
                             category=niche,
-                            address=None,
-                            rating=0.0,
-                            reviews_count=0,
+                            address=address,
+                            rating=rating,
+                            reviews_count=reviews_count,
                             phones=phones,
-                            website=None,
+                            website=website,
                             card_url=f"https://2gis.ru/firm/{firm_id}"
                         )
                         results.append(org_item)
                         await on_item_scraped(org_item)
-                    except Exception:
+                    except Exception as item_err:
+                        logger.debug(f"Error parsing 2GIS card: {item_err}")
                         continue
 
                 # Скроллим список выдачи
