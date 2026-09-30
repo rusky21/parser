@@ -75,6 +75,12 @@ echo [OK] Setup completed successfully!
 echo ======================================================================
 
 :run_app
+echo [*] Checking and freeing port 8000...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do (
+    taskkill /F /PID %%p >nul 2>&1
+)
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+
 "%VENV_PYTHON%" launcher.py
 
 if %errorlevel% neq 0 (
