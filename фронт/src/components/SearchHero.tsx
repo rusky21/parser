@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, MapPin, ChevronDown, ArrowRight } from 'lucide-react';
+import { Search, MapPin, ChevronDown, ArrowRight, Briefcase } from 'lucide-react';
 
 interface SearchHeroProps {
   niche: string;
@@ -7,6 +7,7 @@ interface SearchHeroProps {
   city: string;
   setCity: (val: string) => void;
   onSearch: () => void;
+  onOpenFl: () => void;
   isDropping: boolean;
 }
 
@@ -34,6 +35,7 @@ export const SearchHero: React.FC<SearchHeroProps> = ({
   city,
   setCity,
   onSearch,
+  onOpenFl,
   isDropping,
 }) => {
   const [cityOpen, setCityOpen] = useState(false);
@@ -52,6 +54,25 @@ export const SearchHero: React.FC<SearchHeroProps> = ({
           : 'translate-y-0 opacity-100'
       }`}
     >
+      {/* Top Bar Quick Link */}
+      <div className="absolute top-6 right-6 sm:top-8 sm:right-12 z-30">
+        <button
+          type="button"
+          onClick={onOpenFl}
+          className="flex items-center gap-2.5 px-4 py-2.5 bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 hover:border-emerald-500/40 rounded-2xl text-xs font-medium text-neutral-200 hover:text-white transition-all backdrop-blur-md cursor-pointer group shadow-lg"
+        >
+          <div className="p-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 group-hover:scale-110 transition-transform">
+            <Briefcase className="w-3.5 h-3.5" />
+          </div>
+          <span className="font-semibold">Биржа FL.ru</span>
+          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            LIVE
+          </span>
+          <ArrowRight className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
+        </button>
+      </div>
+
       <div className="max-w-[480px] w-full">
 
         {/* Search Inputs Container */}
@@ -158,6 +179,36 @@ export const SearchHero: React.FC<SearchHeroProps> = ({
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Quick direct access to FL.ru orders */}
+          <div className="pt-3">
+            <button
+              type="button"
+              onClick={onOpenFl}
+              className="group w-full flex items-center justify-between p-3.5 bg-gradient-to-r from-emerald-500/10 via-white/[0.04] to-transparent hover:from-emerald-500/20 hover:to-white/10 border border-emerald-500/20 hover:border-emerald-500/40 rounded-2xl transition-all cursor-pointer shadow-lg"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 group-hover:scale-105 transition-transform">
+                  <Briefcase className="w-4 h-4" />
+                </div>
+                <div className="text-left">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-white group-hover:text-emerald-300 transition-colors">
+                      Биржа заказов FL.ru
+                    </span>
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      LIVE
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">
+                    Перейти сразу к ленте фриланс-заказов в реальном времени
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="w-4 h-4 text-neutral-400 group-hover:text-white group-hover:translate-x-1 transition-all shrink-0 ml-2" />
+            </button>
           </div>
         </form>
       </div>

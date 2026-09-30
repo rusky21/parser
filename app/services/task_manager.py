@@ -111,6 +111,13 @@ class TaskManager:
                 }
             })
 
+            from app.services.telegram.dispatcher import tg_dispatcher
+            asyncio.create_task(tg_dispatcher.broadcast_captcha_alert(
+                service="yandex",
+                message=message,
+                campaign_id=campaign_id
+            ))
+
         async def on_item_scraped(item: ScrapedOrgItem):
             nonlocal collected_count
             if ctx.is_cancelled or collected_count >= limit:
@@ -136,6 +143,15 @@ class TaskManager:
                 city=city
             )
 
+            # Объединяем соцсети и мессенджеры из скрейпера карт и сайта
+            combined_socials = list(item.socials or [])
+            for s in (audit_res.get("extra_socials") or []):
+                if s not in combined_socials:
+                    combined_socials.append(s)
+
+            telegram_val = item.telegram or next((s for s in combined_socials if "t.me" in s), None)
+            has_tg = bool(telegram_val)
+
             # Сохраняем организацию и аудит в SQLite
             lead_dto: Optional[LeadItem] = None
             saved_successfully = False
@@ -152,6 +168,8 @@ class TaskManager:
                         reviews_count=item.reviews_count,
                         phones=item.phones,
                         website=item.website,
+                        telegram=telegram_val,
+                        has_telegram=has_tg,
                         card_url=item.card_url
                     )
                     db.add(org)
@@ -169,7 +187,7 @@ class TaskManager:
                         final_url=audit_res["final_url"],
                         extra_phones=audit_res["extra_phones"],
                         extra_emails=audit_res["extra_emails"],
-                        extra_socials=audit_res["extra_socials"],
+                        extra_socials=combined_socials,
                         status_badge=audit_res["status_badge"],
                         lead_score=audit_res["lead_score"],
                         pitch_pain=pitch_info.get("pain"),
@@ -198,7 +216,6 @@ class TaskManager:
 
                     primary_phone = all_phones[0] if all_phones else None
                     email = audit_res["extra_emails"][0] if audit_res["extra_emails"] else None
-                    telegram = next((s for s in audit_res["extra_socials"] if "t.me" in s), None)
 
                     lead_dto = LeadItem(
                         id=org.id,
@@ -212,8 +229,8 @@ class TaskManager:
                         all_phones=all_phones,
                         email=email,
                         all_emails=audit_res["extra_emails"],
-                        telegram=telegram,
-                        socials=[{"url": s} for s in audit_res["extra_socials"]],
+                        telegram=telegram_val,
+                        socials=[{"url": s} for s in combined_socials],
                         website=org.website,
                         final_url=audit_res["final_url"],
                         card_url=org.card_url,
@@ -251,6 +268,9 @@ class TaskManager:
                         "type": "NEW_LEAD",
                         "data": lead_dto.model_dump()
                     })
+
+                    from app.services.telegram.dispatcher import tg_dispatcher
+                    asyncio.create_task(tg_dispatcher.dispatch_lead(lead_dto.model_dump()))
 
         try:
             # Запуск скрейперов в зависимости от выбранного источника

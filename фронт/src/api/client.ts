@@ -228,5 +228,119 @@ export const api = {
         }
       }
     };
+  },
+
+  // FL.ru Заказы
+  async getFlOrders(params?: {
+    category_id?: string;
+    min_price?: number;
+    is_favorite?: boolean;
+    is_hidden?: boolean;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<{ items: BackendFLOrder[]; total: number; page: number; page_size: number }> {
+    const q = new URLSearchParams();
+    if (params?.category_id) q.set('category_id', params.category_id);
+    if (params?.min_price) q.set('min_price', String(params.min_price));
+    if (params?.is_favorite !== undefined) q.set('is_favorite', String(params.is_favorite));
+    if (params?.is_hidden !== undefined) q.set('is_hidden', String(params.is_hidden));
+    if (params?.search) q.set('search', params.search);
+    if (params?.page) q.set('page', String(params.page));
+    if (params?.page_size) q.set('page_size', String(params.page_size));
+
+    const res = await fetch(`${getApiBase()}/fl/orders?${q.toString()}`);
+    if (!res.ok) throw new Error('Ошибка получения заказов FL');
+    return res.json();
+  },
+
+  async updateFlInteraction(orderId: number, data: { is_favorite?: boolean; is_hidden?: boolean; is_read?: boolean }): Promise<any> {
+    const res = await fetch(`${getApiBase()}/fl/orders/${orderId}/interaction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Ошибка обновления статуса заказа');
+    return res.json();
+  },
+
+  async getFlCategories(): Promise<FLCategory[]> {
+    const res = await fetch(`${getApiBase()}/fl/categories`);
+    if (!res.ok) return [];
+    return res.json();
+  },
+
+  async triggerFlPoll(): Promise<void> {
+    await fetch(`${getApiBase()}/fl/poll`, { method: 'POST' });
+  },
+
+  // Глобальный WebSocket для заказов FL
+  connectGlobalWebSocket(handlers: {
+    onNewFlOrder?: (order: BackendFLOrder) => void;
+    onFlOrderUpdated?: (data: any) => void;
+  }) {
+    const wsUrl = `${getWsBase()}/events`;
+    let socket: WebSocket | null = null;
+    let isClosed = false;
+
+    try {
+      socket = new WebSocket(wsUrl);
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'NEW_FL_ORDER' && msg.data) {
+            handlers.onNewFlOrder?.(msg.data);
+          } else if (msg.type === 'FL_ORDER_INTERACTION_UPDATED' && msg.data) {
+            handlers.onFlOrderUpdated?.(msg.data);
+          }
+        } catch (e) {
+          console.error('[WS Global] Parse error', e);
+        }
+      };
+      socket.onclose = () => {
+        if (!isClosed) {
+          setTimeout(() => {
+            if (!isClosed) api.connectGlobalWebSocket(handlers);
+          }, 3000);
+        }
+      };
+    } catch (e) {
+      console.error('[WS Global] Connection failed', e);
+    }
+
+    return {
+      close() {
+        isClosed = true;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.close();
+        }
+      }
+    };
   }
 };
+
+export interface BackendFLOrder {
+  id: number;
+  title: string;
+  description: string;
+  price_raw: string;
+  price_rub: number | null;
+  is_negotiable: boolean;
+  category_id?: string;
+  category_name?: string;
+  url: string;
+  is_pro_only: boolean;
+  is_urgent: boolean;
+  published_at?: string;
+  created_at?: string;
+  is_favorite: boolean;
+  is_hidden: boolean;
+  is_read: boolean;
+}
+
+export interface FLCategory {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+}

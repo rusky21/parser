@@ -88,6 +88,8 @@ class Organization(Base):
     
     phones: Mapped[Any] = mapped_column(JSON, default=list)  # Список телефонов из карточки
     website: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    telegram: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Прямой ник или ссылка t.me
+    has_telegram: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     card_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -140,3 +142,137 @@ class AuditResult(Base):
     audited_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     organization: Mapped["Organization"] = relationship("Organization", back_populates="audit")
+
+
+class FLOrder(Base):
+    """Спарсенный заказ с биржи FL.ru"""
+    __tablename__ = "fl_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # ID проекта на FL.ru (например, 5432190)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    price_raw: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Исходная строка (напр. "15 000 ₽" или "По договоренности")
+    price_rub: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)  # Парсированная сумма в рублях для фильтрации
+    is_negotiable: Mapped[bool] = mapped_column(Boolean, default=False)  # Флаг "По договоренности"
+    category_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    is_pro_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_urgent: Mapped[bool] = mapped_column(Boolean, default=False)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    # Взаимодействие (избранное/скрыто)
+    interaction: Mapped[Optional["FLOrderInteraction"]] = relationship(
+        "FLOrderInteraction",
+        back_populates="order",
+        uselist=False,
+        lazy="selectin",
+        cascade="all, delete-orphan"
+    )
+
+    def to_dict(self) -> dict:
+        is_fav = False
+        is_hid = False
+        is_rd = False
+        # Безопасное чтение без DetachedInstanceError при отделенной сессии
+        inter = self.__dict__.get("interaction")
+        if inter:
+            is_fav = getattr(inter, "is_favorite", False)
+            is_hid = getattr(inter, "is_hidden", False)
+            is_rd = getattr(inter, "is_read", False)
+
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "price_raw": self.price_raw,
+            "price_rub": self.price_rub,
+            "is_negotiable": self.is_negotiable,
+            "category_id": self.category_id,
+            "category_name": self.category_name,
+            "url": self.url,
+            "is_pro_only": self.is_pro_only,
+            "is_urgent": self.is_urgent,
+            "published_at": self.published_at.isoformat() if self.published_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "is_favorite": is_fav,
+            "is_hidden": is_hid,
+            "is_read": is_rd,
+        }
+
+
+class FLCategorySync(Base):
+    """Фиксация первой синхронизации категории для предотвращения флуда старыми заказами"""
+    __tablename__ = "fl_category_sync"
+
+    category_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class FLOrderInteraction(Base):
+    """Пользовательские метки десктопа: прочитано / избранное / скрыто"""
+    __tablename__ = "fl_order_interactions"
+
+    order_id: Mapped[int] = mapped_column(Integer, ForeignKey("fl_orders.id", ondelete="CASCADE"), primary_key=True)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    order: Mapped["FLOrder"] = relationship("FLOrder", back_populates="interaction")
+
+
+class TelegramUser(Base):
+    """Пользователь Telegram-бота"""
+    __tablename__ = "telegram_users"
+
+    chat_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    settings: Mapped[Optional["TelegramUserSettings"]] = relationship(
+        "TelegramUserSettings",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
+
+class TelegramUserSettings(Base):
+    """Персональные настройки уведомлений и фильтров пользователя Telegram"""
+    __tablename__ = "telegram_user_settings"
+
+    chat_id: Mapped[int] = mapped_column(Integer, ForeignKey("telegram_users.chat_id", ondelete="CASCADE"), primary_key=True)
+    fl_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    fl_categories: Mapped[Any] = mapped_column(JSON, default=list)  # Список выбранных ID категорий
+    fl_min_price: Mapped[int] = mapped_column(Integer, default=0)
+    fl_negative_words: Mapped[Any] = mapped_column(JSON, default=list)
+    fl_keywords: Mapped[Any] = mapped_column(JSON, default=list)  # Белые ключевые слова для фильтрации
+    fl_allow_negotiable: Mapped[bool] = mapped_column(Boolean, default=True)  # Принимать по договоренности
+    fl_hide_pro: Mapped[bool] = mapped_column(Boolean, default=False)  # Скрывать только для PRO
+    fl_urgent_only: Mapped[bool] = mapped_column(Boolean, default=False)  # Только срочные
+    maps_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    maps_only_with_telegram: Mapped[bool] = mapped_column(Boolean, default=False)  # Только с TG
+    maps_source_filter: Mapped[str] = mapped_column(String(50), default="all")  # all / yandex / 2gis
+    maps_only_without_site: Mapped[bool] = mapped_column(Boolean, default=False)  # Только без сайта
+    maps_only_without_ssl: Mapped[bool] = mapped_column(Boolean, default=False)  # Только без SSL
+    notify_sound: Mapped[bool] = mapped_column(Boolean, default=True)  # Звуковые уведомления
+    notify_captcha: Mapped[bool] = mapped_column(Boolean, default=True)  # Оповещения о капче
+    default_limit: Mapped[int] = mapped_column(Integer, default=50)  # Лимит сбора по умолчанию
+
+    user: Mapped["TelegramUser"] = relationship("TelegramUser", back_populates="settings")
+
+
+class FLOrderDelivery(Base):
+    """История отправки заказов конкретным Telegram пользователям"""
+    __tablename__ = "fl_order_deliveries"
+
+    order_id: Mapped[int] = mapped_column(Integer, ForeignKey("fl_orders.id", ondelete="CASCADE"), primary_key=True)
+    chat_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    is_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

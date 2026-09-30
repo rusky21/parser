@@ -13,6 +13,8 @@ class ScrapedOrgItem(BaseModel):
     reviews_count: int = 0
     phones: List[str] = Field(default_factory=list)
     website: Optional[str] = None
+    telegram: Optional[str] = None
+    socials: List[str] = Field(default_factory=list)
     card_url: Optional[str] = None
 
 class BaseScraper(ABC):

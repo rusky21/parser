@@ -10,6 +10,17 @@ class ConnectionManager:
     def __init__(self):
         # campaign_id -> список активных WebSocket соединений
         self.active_connections: Dict[int, List[WebSocket]] = {}
+        self.global_connections: List[WebSocket] = []
+
+    async def connect_global(self, websocket: WebSocket):
+        await websocket.accept()
+        self.global_connections.append(websocket)
+        logger.info("Global WebSocket client connected")
+
+    def disconnect_global(self, websocket: WebSocket):
+        if websocket in self.global_connections:
+            self.global_connections.remove(websocket)
+        logger.info("Global WebSocket client disconnected")
 
     async def connect(self, campaign_id: int, websocket: WebSocket):
         await websocket.accept()
@@ -41,5 +52,17 @@ class ConnectionManager:
         # Удаляем отключившиеся сокеты
         for dead in dead_sockets:
             self.disconnect(campaign_id, dead)
+
+    async def broadcast_all(self, event: Dict[str, Any]):
+        """Рассылка события по всем подключенным сокетам (кампании + глобальные)"""
+        all_sockets = list(self.global_connections)
+        for sockets in self.active_connections.values():
+            all_sockets.extend(sockets)
+
+        for connection in set(all_sockets):
+            try:
+                await connection.send_json(event)
+            except Exception:
+                pass
 
 ws_manager = ConnectionManager()

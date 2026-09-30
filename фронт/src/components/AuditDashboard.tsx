@@ -15,10 +15,12 @@ import {
   Check,
   RefreshCw,
   AlertTriangle,
-  Trash2
+  Trash2,
+  Briefcase
 } from 'lucide-react';
 import type { Lead, SearchConfig } from '../types';
 import { LeadDetailModal } from './LeadDetailModal';
+import { FlOrdersView } from './FlOrdersView';
 import { exportLeadsToExcel } from '../utils/exportExcel';
 import { api, type BackendReport } from '../api/client';
 
@@ -37,6 +39,7 @@ interface AuditDashboardProps {
   captchaRequired?: { service: string; message: string } | null;
   onResolveCaptcha?: () => void;
   onSelectHistoricalCampaign?: (campaignId: number) => void;
+  initialTab?: 'grid' | 'fl' | 'docs' | 'settings';
 }
 
 export const AuditDashboard: React.FC<AuditDashboardProps> = ({
@@ -54,11 +57,19 @@ export const AuditDashboard: React.FC<AuditDashboardProps> = ({
   captchaRequired = null,
   onResolveCaptcha,
   onSelectHistoricalCampaign,
+  initialTab = 'grid',
 }) => {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [leadLimit, setLeadLimit] = useState(config.limit || 50);
-  const [activeTab, setActiveTab] = useState<'grid' | 'docs' | 'settings'>('grid');
+  const [activeTab, setActiveTab] = useState<'grid' | 'fl' | 'docs' | 'settings'>(initialTab);
+  const [onlyWithTelegram, setOnlyWithTelegram] = useState<boolean>(false);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
 
   // Filter dropdown states
   const [nicheOpen, setNicheOpen] = useState(false);
@@ -211,6 +222,21 @@ export const AuditDashboard: React.FC<AuditDashboardProps> = ({
                 <span className="absolute -left-3 sm:-left-3.5 top-1/2 -translate-y-1/2 w-1 h-5 bg-white rounded-r-full" />
               )}
               <LayoutGrid className="w-5 h-5" />
+            </button>
+
+            <button
+              onClick={() => setActiveTab('fl')}
+              className={`p-2.5 rounded-xl transition-all relative ${
+                activeTab === 'fl'
+                  ? 'text-white bg-white/10'
+                  : 'text-neutral-500 hover:text-neutral-300 hover:bg-white/5'
+              }`}
+              title="Биржа FL.ru (Заказы)"
+            >
+              {activeTab === 'fl' && (
+                <span className="absolute -left-3 sm:-left-3.5 top-1/2 -translate-y-1/2 w-1 h-5 bg-white rounded-r-full" />
+              )}
+              <Briefcase className="w-5 h-5" />
             </button>
 
             <button
@@ -448,18 +474,39 @@ export const AuditDashboard: React.FC<AuditDashboardProps> = ({
 
               {/* Progress Bar & Status Radar Strip */}
               <div className="mb-4">
-                <div className="flex items-center justify-between text-xs font-mono text-neutral-400 mb-1.5">
+                <div className="flex flex-wrap items-center justify-between text-xs font-mono text-neutral-400 mb-1.5 gap-2">
                   <div className="flex items-center gap-2">
                     <span>
                       Found: <strong className="text-neutral-200">{currentFound || leads.length}</strong> / {leadLimit} leads
                     </span>
                     {auditStatusMessage && (
-                      <span className="text-neutral-500 truncate max-w-[400px]">
+                      <span className="text-neutral-500 truncate max-w-[300px]">
                         | {auditStatusMessage}
                       </span>
                     )}
                   </div>
-                  <span>{progressPercent}%</span>
+
+                  <div className="flex items-center gap-3">
+                    {/* Telegram Filter Toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setOnlyWithTelegram(!onlyWithTelegram)}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded-xl border text-xs font-mono transition-all cursor-pointer ${
+                        onlyWithTelegram
+                          ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 font-semibold shadow-sm shadow-emerald-500/10'
+                          : 'bg-white/5 border-white/10 text-neutral-400 hover:text-white hover:bg-white/10'
+                      }`}
+                      title="Показывать только компании с найденным контактом Telegram"
+                    >
+                      <Send className={`w-3 h-3 ${onlyWithTelegram ? 'text-emerald-400' : 'text-neutral-400'}`} />
+                      <span>{onlyWithTelegram ? 'Только с Telegram' : 'Все компании'}</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/50 border border-white/10 text-neutral-300">
+                        {leads.filter((l) => Boolean(l.telegram && l.telegram.trim())).length}/{leads.length}
+                      </span>
+                    </button>
+
+                    <span>{progressPercent}%</span>
+                  </div>
                 </div>
                 <div className="w-full h-1 bg-neutral-900 rounded-full overflow-hidden border border-white/5">
                   <div
@@ -483,21 +530,31 @@ export const AuditDashboard: React.FC<AuditDashboardProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
-                      {leads.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="py-12 text-center text-neutral-500 font-mono text-xs">
-                            {isAuditing ? (
-                              <div className="flex flex-col items-center gap-2">
-                                <RefreshCw className="w-5 h-5 animate-spin text-neutral-400" />
-                                <span>Поиск и аудит организаций в процессе...</span>
-                              </div>
-                            ) : (
-                              'Нет собранных лидов. Нажмите «Start Audit» для запуска сбора.'
-                            )}
-                          </td>
-                        </tr>
-                      ) : (
-                        leads.slice(0, leadLimit).map((lead, idx) => (
+                      {(() => {
+                        const displayedLeads = onlyWithTelegram
+                          ? leads.filter((l) => Boolean(l.telegram && l.telegram.trim()))
+                          : leads;
+
+                        if (displayedLeads.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={5} className="py-12 text-center text-neutral-500 font-mono text-xs">
+                                {isAuditing ? (
+                                  <div className="flex flex-col items-center gap-2">
+                                    <RefreshCw className="w-5 h-5 animate-spin text-neutral-400" />
+                                    <span>Поиск и аудит организаций в процессе...</span>
+                                  </div>
+                                ) : onlyWithTelegram ? (
+                                  'Нет организаций с прямым Telegram контактом. Переключитесь на «Все компании».'
+                                ) : (
+                                  'Нет собранных лидов. Нажмите «Start Audit» для запуска сбора.'
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return displayedLeads.slice(0, leadLimit).map((lead, idx) => (
                           <tr
                             key={lead.id || idx}
                             onClick={() => setSelectedLead(lead)}
@@ -604,14 +661,17 @@ export const AuditDashboard: React.FC<AuditDashboardProps> = ({
                               <ArrowRight className="w-4 h-4 text-neutral-600 group-hover:text-white group-hover:translate-x-1 transition-all inline-block" />
                             </td>
                           </tr>
-                        ))
-                      )}
+                        ));
+                      })()}
                     </tbody>
                   </table>
                 </div>
               </div>
             </>
           )}
+
+          {/* TAB: FL.RU ORDERS VIEW (БИРЖА ЗАКАЗОВ) */}
+          {activeTab === 'fl' && <FlOrdersView />}
 
           {/* TAB 2: REPORTS VIEW (ВКЛАДКА ОТЧЁТЫ - ИСТОРИЯ ПОИСКОВ) */}
           {activeTab === 'docs' && (

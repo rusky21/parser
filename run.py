@@ -9,10 +9,11 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding='utf-8')
     except Exception:
         pass
-    try:
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    except Exception:
-        pass
+    if sys.version_info < (3, 14):
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        except Exception:
+            pass
 
 def check_playwright():
     """Проверка и доустановка браузера Playwright Chromium при первом запуске"""
@@ -40,7 +41,7 @@ def main():
             host=host,
             port=port,
             reload=False,
-            loop="asyncio.windows_events:ProactorEventLoop" if sys.platform == "win32" else "auto"
+            loop="asyncio.windows_events:ProactorEventLoop" if (sys.platform == "win32" and sys.version_info < (3, 14)) else "auto"
         )
     except OSError as e:
         if "10048" in str(e) or "address already in use" in str(e).lower():

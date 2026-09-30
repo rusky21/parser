@@ -357,6 +357,8 @@ class TwoGisScraper(BaseScraper):
         # Контакты
         phones = []
         website = None
+        telegram = None
+        socials = []
 
         contact_groups = item.get("contact_groups", []) or (item.get("org", {}).get("contact_groups", []) if isinstance(item.get("org"), dict) else [])
         for cg in (contact_groups or []):
@@ -365,29 +367,51 @@ class TwoGisScraper(BaseScraper):
             for contact in cg.get("contacts", []):
                 if not isinstance(contact, dict):
                     continue
-                c_type = contact.get("type", "")
-                if c_type in ("phone", "contacts"):
-                    phone_val = contact.get("text") or contact.get("value")
-                    clean_p = self._normalize_phone(phone_val)
+                c_type = str(contact.get("type", "")).lower()
+                text_or_val = str(contact.get("url") or contact.get("text") or contact.get("value") or "").strip()
+                
+                if c_type in ("phone", "contacts") and not any(m in text_or_val.lower() for m in ("t.me", "vk.com", "wa.me")):
+                    clean_p = self._normalize_phone(text_or_val)
                     if clean_p and clean_p not in phones:
                         phones.append(clean_p)
                 elif c_type in ("website", "url", "site"):
-                    if not website:
-                        website = contact.get("url") or contact.get("text")
+                    if not website and not any(ign in text_or_val.lower() for ign in ("t.me", "telegram", "vk.com", "wa.me", "viber")):
+                        website = text_or_val
+
+                # Детекция Telegram
+                if "t.me/" in text_or_val or "telegram.me/" in text_or_val or c_type in ("telegram", "tg"):
+                    clean_tg = text_or_val
+                    if not clean_tg.startswith("http"):
+                        clean_tg = f"https://t.me/{clean_tg.lstrip('@')}"
+                    if not telegram:
+                        telegram = clean_tg
+                    if clean_tg not in socials:
+                        socials.append(clean_tg)
+                elif any(soc in text_or_val.lower() for soc in ("vk.com", "wa.me", "whatsapp.com", "viber", "instagram")):
+                    if text_or_val not in socials:
+                        socials.append(text_or_val)
 
         # Дополнительный поиск ссылок на сайты в item
         if not website:
             for lk in (item.get("links", []) or []):
                 if isinstance(lk, dict):
-                    url_val = lk.get("url") or lk.get("href")
-                    if url_val and not any(ign in url_val for ign in ("2gis.ru", "google")):
+                    url_val = lk.get("url") or lk.get("href") or ""
+                    if "t.me/" in url_val and not telegram:
+                        telegram = url_val
+                        socials.append(url_val)
+                    elif url_val and not any(ign in url_val for ign in ("2gis.ru", "google", "vk.com", "t.me")):
                         website = url_val
                         break
         if not website and "external_content" in item and isinstance(item["external_content"], list):
             for ec in item["external_content"]:
-                if isinstance(ec, dict) and ec.get("url") and not any(ign in ec.get("url") for ign in ("2gis.ru", "google")):
-                    website = ec["url"]
-                    break
+                if isinstance(ec, dict) and ec.get("url"):
+                    eurl = ec["url"]
+                    if "t.me/" in eurl and not telegram:
+                        telegram = eurl
+                        socials.append(eurl)
+                    elif not any(ign in eurl for ign in ("2gis.ru", "google", "vk.com", "t.me")):
+                        website = eurl
+                        break
 
         return ScrapedOrgItem(
             source="2gis",
@@ -399,6 +423,8 @@ class TwoGisScraper(BaseScraper):
             reviews_count=reviews_count,
             phones=phones,
             website=website,
+            telegram=telegram,
+            socials=socials,
             card_url=f"https://2gis.ru/firm/{item_id}"
         )
 

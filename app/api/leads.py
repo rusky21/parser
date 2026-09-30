@@ -16,6 +16,9 @@ async def get_leads(
     badge: Optional[str] = Query(None, description="Фильтр по бейджу: NO_SSL, NOT_RESPONSIVE, NO_ANALYTICS, HTTPS_OK, NO_WEBSITE"),
     search: Optional[str] = Query(None, description="Поиск по названию или телефону"),
     min_score: Optional[int] = Query(None, ge=0, le=100, description="Минимальный Lead Score"),
+    has_telegram: Optional[bool] = Query(None, description="Фильтр: только компании с Telegram (True)"),
+    source: Optional[str] = Query(None, description="Фильтр по источнику: yandex, 2gis"),
+    has_website: Optional[bool] = Query(None, description="Фильтр наличия сайта: True (только с сайтом), False (только без сайта)"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db)
@@ -24,6 +27,21 @@ async def get_leads(
 
     if campaign_id:
         query = query.where(Organization.campaign_id == campaign_id)
+
+    if source and source != "all":
+        query = query.where(Organization.source.ilike(f"%{source}%"))
+
+    if has_website is not None:
+        if has_website:
+            query = query.where(Organization.website != None).where(Organization.website != "")
+        else:
+            query = query.where((Organization.website == None) | (Organization.website == ""))
+
+    if has_telegram is not None:
+        if has_telegram:
+            query = query.where(Organization.has_telegram.is_(True))
+        else:
+            query = query.where((Organization.has_telegram.is_(False)) | (Organization.has_telegram.is_(None)))
 
     if search:
         search_term = f"%{search.strip()}%"
@@ -60,8 +78,8 @@ async def get_leads(
 
         primary_phone = all_phones[0] if all_phones else None
         email = audit.extra_emails[0] if (audit and audit.extra_emails) else None
-        telegram = None
-        if audit and audit.extra_socials:
+        telegram = org.telegram
+        if not telegram and audit and audit.extra_socials:
             telegram = next((s for s in audit.extra_socials if "t.me" in s), None)
 
         pitch_detail = None

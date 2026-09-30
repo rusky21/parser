@@ -1,7 +1,7 @@
 import sys
 import asyncio
 
-if sys.platform == "win32":
+if sys.platform == "win32" and sys.version_info < (3, 14):
     try:
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     except Exception:
@@ -18,7 +18,11 @@ from app.api.leads import router as leads_router
 from app.api.reports import router as reports_router
 from app.api.export import router as export_router
 from app.api.geo import router as geo_router
+from app.api.fl import router as fl_router
+from app.api.settings import router as settings_router
 from app.api.websocket import ws_manager
+from app.services.fl.fl_worker import fl_worker
+from app.services.telegram.bot_service import tg_bot_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,9 +36,20 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing SQLite database...")
     await init_db()
     logger.info("Database initialized successfully.")
+
+    # Запуск фонового парсера FL.ru
+    fl_worker.start()
+
+    # Запуск Telegram-бота (если указан токен)
+    await tg_bot_service.start()
+
     yield
+
     # Остановка
-    logger.info("Application shutting down.")
+    logger.info("Application shutting down...")
+    fl_worker.stop()
+    await tg_bot_service.stop()
+    logger.info("Application shutdown complete.")
 
 app = FastAPI(
     title="LeadHunter & Audit API",
@@ -58,8 +73,25 @@ app.include_router(leads_router)
 app.include_router(reports_router)
 app.include_router(export_router)
 app.include_router(geo_router)
+app.include_router(fl_router)
+app.include_router(settings_router)
 
-# WebSocket для стриминга прогресса и лидов в реальном времени
+# Глобальный WebSocket для всех событий (FL заказы, смена статусов)
+@app.websocket("/ws/events")
+async def websocket_global_endpoint(websocket: WebSocket):
+    await ws_manager.connect_global(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        ws_manager.disconnect_global(websocket)
+    except Exception as e:
+        logger.warning(f"Global WebSocket error: {e}")
+        ws_manager.disconnect_global(websocket)
+
+# WebSocket для стриминга прогресса конкретной кампании
 @app.websocket("/ws/{campaign_id}")
 async def websocket_endpoint(websocket: WebSocket, campaign_id: int):
     await ws_manager.connect(campaign_id, websocket)

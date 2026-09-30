@@ -6,6 +6,10 @@ env/
 venv/
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
+.env
+*.log
 browser_profile/
 .playwright/
 dist/

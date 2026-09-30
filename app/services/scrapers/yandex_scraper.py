@@ -85,23 +85,47 @@ class YandexScraper(BaseScraper):
         rating = float(rating_data.get("ratingValue") or rating_data.get("rating") or 0.0)
         reviews_count = int(rating_data.get("reviewCount") or rating_data.get("reviewsCount") or 0)
 
-        # Сайт организации (из urls или actionButtons)
+        # Сайт организации, Telegram и соцсети
         website = None
-        urls = raw.get("urls") or []
-        if urls and isinstance(urls, list):
-            for u in urls:
-                cleaned = self._clean_website(u)
+        telegram = None
+        socials = []
+
+        all_candidate_urls = []
+        for u in (raw.get("urls") or []):
+            if isinstance(u, str):
+                all_candidate_urls.append(u)
+            elif isinstance(u, dict) and u.get("value"):
+                all_candidate_urls.append(u["value"])
+
+        for ab in (raw.get("actionButtons") or []):
+            if isinstance(ab, dict):
+                v = ab.get("value") or ab.get("url") or ""
+                if v:
+                    all_candidate_urls.append(v)
+
+        for sl in (raw.get("socialLinks") or raw.get("links") or []):
+            if isinstance(sl, str):
+                all_candidate_urls.append(sl)
+            elif isinstance(sl, dict) and (sl.get("href") or sl.get("url")):
+                all_candidate_urls.append(sl.get("href") or sl.get("url"))
+
+        for cu in all_candidate_urls:
+            cu_str = str(cu).strip()
+            if not cu_str:
+                continue
+            if "t.me/" in cu_str or "telegram.me/" in cu_str:
+                clean_tg = cu_str if cu_str.startswith("http") else f"https://{cu_str}"
+                if not telegram:
+                    telegram = clean_tg
+                if clean_tg not in socials:
+                    socials.append(clean_tg)
+            elif any(s in cu_str.lower() for s in ("vk.com", "wa.me", "whatsapp.com", "viber")):
+                if cu_str not in socials:
+                    socials.append(cu_str)
+            elif not website and not any(ign in cu_str.lower() for ign in ("yandex", "google", "vk.com", "t.me")):
+                cleaned = self._clean_website(cu_str)
                 if cleaned:
                     website = cleaned
-                    break
-        if not website:
-            for ab in raw.get("actionButtons") or []:
-                val = ab.get("value", "")
-                if val and val.startswith("http"):
-                    cleaned = self._clean_website(val)
-                    if cleaned:
-                        website = cleaned
-                        break
 
         # Телефоны
         phones = []
@@ -127,6 +151,8 @@ class YandexScraper(BaseScraper):
             reviews_count=reviews_count,
             phones=phones,
             website=website,
+            telegram=telegram,
+            socials=socials,
             card_url=card_url
         )
 

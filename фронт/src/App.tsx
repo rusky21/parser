@@ -10,6 +10,7 @@ export const App: React.FC = () => {
   // Navigation / View State
   const [isDropping, setIsDropping] = useState<boolean>(false);
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
+  const [dashboardTab, setDashboardTab] = useState<'grid' | 'fl' | 'docs' | 'settings'>('grid');
 
   // Search Configuration State
   const [niche, setNiche] = useState<string>('Стоматологии');
@@ -126,6 +127,7 @@ export const App: React.FC = () => {
 
   // Клик по кнопке Поиск на первом экране
   const handleSearch = () => {
+    setDashboardTab('grid');
     // Плавная анимация перехода
     setIsDropping(true);
     setTimeout(() => {
@@ -133,6 +135,15 @@ export const App: React.FC = () => {
     }, 280);
 
     triggerSearch(niche, city, config.limit, config.maps);
+  };
+
+  // Прямой переход к заказам биржи FL.ru с главного экрана
+  const handleOpenFl = () => {
+    setDashboardTab('fl');
+    setIsDropping(true);
+    setTimeout(() => {
+      setShowDashboard(true);
+    }, 280);
   };
 
   // Повторный запуск аудита из дашборда
@@ -206,6 +217,7 @@ export const App: React.FC = () => {
         city={city}
         setCity={setCity}
         onSearch={handleSearch}
+        onOpenFl={handleOpenFl}
         isDropping={isDropping}
       />
 
@@ -232,6 +244,7 @@ export const App: React.FC = () => {
           captchaRequired={captchaRequired}
           onResolveCaptcha={handleResolveCaptcha}
           onSelectHistoricalCampaign={handleSelectHistoricalCampaign}
+          initialTab={dashboardTab}
         />
       </div>
     </div>
