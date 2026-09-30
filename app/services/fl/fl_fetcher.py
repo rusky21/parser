@@ -1,5 +1,8 @@
+import os
 import re
 import html
+import time
+import random
 import email.utils
 import logging
 import xml.etree.ElementTree as ET
@@ -12,23 +15,70 @@ from app.services.fl.constants import FL_CATEGORIES, CATEGORY_BY_ID
 
 logger = logging.getLogger("fl_fetcher")
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+# Реалистичный пул браузерных профилей для ротации
+USER_AGENTS = [
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        "brand": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+        "platform": '"Windows"',
+    },
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0",
+        "brand": '"Microsoft Edge";v="128", "Chromium";v="128", "Not=A?Brand";v="24"',
+        "platform": '"Windows"',
+    },
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        "brand": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+        "platform": '"macOS"',
+    },
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
+        "brand": None,
+        "platform": '"Windows"',
+    },
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:130.0) Gecko/20100101 Firefox/130.0",
+        "brand": None,
+        "platform": '"macOS"',
+    }
+]
 
 class FLFetcher:
     """
     Модуль извлечения заказов с биржи FL.ru:
-    1. Прямой HTML-скрейпинг ленты проектов
-    2. Надежный fallback на RSS-фид при Cloudflare/403
+    1. Прямой HTML-скрейпинг ленты проектов с ротацией заголовков и защитой от блокировок
+    2. Надежный fallback на RSS-фид при Cloudflare/403/429
+    3. Поддержка прокси и адаптивный кулдаун
     """
 
     def __init__(self):
-        self.headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        self._html_cooldown_until: float = 0.0
+
+    def _get_proxy(self) -> Optional[str]:
+        """Получить URL прокси из окружения если задан"""
+        return os.environ.get("FL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
+
+    def _get_headers(self, referer: str = "https://www.fl.ru/") -> dict:
+        """Генерирует заголовки реального браузера со случайным User-Agent"""
+        profile = random.choice(USER_AGENTS)
+        headers = {
+            "User-Agent": profile["ua"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://www.fl.ru/",
+            "Referer": referer,
             "Cache-Control": "max-age=0",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
         }
+        if profile.get("brand"):
+            headers["Sec-Ch-Ua"] = profile["brand"]
+            headers["Sec-Ch-Ua-Mobile"] = "?0"
+            headers["Sec-Ch-Ua-Platform"] = profile["platform"]
+        return headers
 
     def _parse_price(self, price_str: str) -> tuple[Optional[int], bool]:
         """
@@ -115,8 +165,16 @@ class FLFetcher:
     async def fetch_projects(self, category_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Основной метод получения свежих проектов:
-        Сначала пробует прямой HTML-парсинг страницы, если ошибка — задействует RSS.
+        1. Проверяет активный защитный кулдаун
+        2. Сначала пробует прямой HTML-парсинг с ротацией User-Agent
+        3. При 429/403/Cloudflare включает кулдаун и переключается на RSS
         """
+        # Если недавно был пойман 429/403/CF, не спамим HTML, а сразу идем через RSS
+        if time.time() < self._html_cooldown_until:
+            rem = int(self._html_cooldown_until - time.time())
+            logger.info(f"FL HTML: защитный кулдаун ({rem}с). Опрос категории {category_id or 'all'} через RSS.")
+            return await self._fetch_via_rss(category_id)
+
         url = "https://www.fl.ru/projects/"
         if category_id and category_id.isdigit():
             url = f"https://www.fl.ru/projects/?category={category_id}"
@@ -128,7 +186,7 @@ class FLFetcher:
                 logger.info(f"FL HTML: собрано {len(projects)} проектов для категории {category_id or 'all'}")
                 return projects
         except Exception as e:
-            logger.warning(f"FL HTML fetch error ({e}), переключение на RSS fallback...")
+            logger.warning(f"FL HTML fetch error ({e}), мгновенное переключение на RSS fallback...")
 
         # Fallback на RSS
         try:
@@ -140,15 +198,23 @@ class FLFetcher:
         return projects
 
     async def _fetch_via_html(self, url: str, category_id: Optional[str]) -> List[Dict[str, Any]]:
-        """Прямой разбор HTML ленты FL.ru"""
-        async with httpx.AsyncClient(headers=self.headers, timeout=12.0, follow_redirects=True) as client:
+        """Прямой разбор HTML ленты FL.ru с ротацией заголовков и защитой от блокировки"""
+        headers = self._get_headers(url)
+        proxy = self._get_proxy()
+
+        async with httpx.AsyncClient(headers=headers, proxy=proxy, timeout=10.0, follow_redirects=True) as client:
             resp = await client.get(url)
+            if resp.status_code in (429, 403, 503):
+                self._html_cooldown_until = time.time() + 45.0
+                raise Exception(f"HTTP Status {resp.status_code} (включен кулдаун 45с)")
+
             if resp.status_code != 200:
                 raise Exception(f"HTTP Status {resp.status_code}")
 
             html_text = resp.text
-            if "Just a moment..." in html_text or "cf-browser-verification" in html_text:
-                raise Exception("Cloudflare challenge detected")
+            if "Just a moment..." in html_text or "cf-browser-verification" in html_text or "challenge-running" in html_text:
+                self._html_cooldown_until = time.time() + 45.0
+                raise Exception("Cloudflare challenge detected (включен кулдаун 45с)")
 
             tree = HTMLParser(html_text)
             items = []
@@ -237,7 +303,9 @@ class FLFetcher:
         if category_id and category_id.isdigit():
             rss_url = f"https://www.fl.ru/rss/all.xml?category={category_id}"
 
-        async with httpx.AsyncClient(headers=self.headers, timeout=12.0) as client:
+        headers = self._get_headers(rss_url)
+        proxy = self._get_proxy()
+        async with httpx.AsyncClient(headers=headers, proxy=proxy, timeout=12.0) as client:
             resp = await client.get(rss_url)
             if resp.status_code != 200:
                 raise Exception(f"RSS Status {resp.status_code}")

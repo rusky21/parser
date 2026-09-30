@@ -274,10 +274,23 @@ export const api = {
     await fetch(`${getApiBase()}/fl/poll`, { method: 'POST' });
   },
 
+  async getFlWorkerStatus(): Promise<{
+    is_running: boolean;
+    poll_interval_min: number;
+    poll_interval_max: number;
+    next_poll_in: number;
+    last_poll_at: string | null;
+  }> {
+    const res = await fetch(`${getApiBase()}/fl/worker/status`);
+    if (!res.ok) return { is_running: true, poll_interval_min: 15, poll_interval_max: 20, next_poll_in: 18, last_poll_at: null };
+    return res.json();
+  },
+
   // Глобальный WebSocket для заказов FL
   connectGlobalWebSocket(handlers: {
     onNewFlOrder?: (order: BackendFLOrder) => void;
     onFlOrderUpdated?: (data: any) => void;
+    onFlPollTick?: (data: { status: string; next_poll_in: number; last_poll_at: string | null }) => void;
   }) {
     const wsUrl = `${getWsBase()}/events`;
     let socket: WebSocket | null = null;
@@ -292,6 +305,8 @@ export const api = {
             handlers.onNewFlOrder?.(msg.data);
           } else if (msg.type === 'FL_ORDER_INTERACTION_UPDATED' && msg.data) {
             handlers.onFlOrderUpdated?.(msg.data);
+          } else if (msg.type === 'FL_POLL_TICK' && msg.data) {
+            handlers.onFlPollTick?.(msg.data);
           }
         } catch (e) {
           console.error('[WS Global] Parse error', e);

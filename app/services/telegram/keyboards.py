@@ -52,9 +52,13 @@ def leads_filter_keyboard(only_tg: bool) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def fl_menu_keyboard() -> InlineKeyboardMarkup:
-    """Меню биржи FL.ru"""
+def fl_menu_keyboard(fl_live_mode: bool = True) -> InlineKeyboardMarkup:
+    """Меню биржи FL.ru с тумблером Live-режима"""
+    live_text = "⚡ Live-мониторинг: 🟢 ВКЛ (15-20с)" if fl_live_mode else "⚡ Live-мониторинг: 🔴 ВЫКЛ"
     buttons = [
+        [
+            InlineKeyboardButton(text=live_text, callback_data="toggle_fl_live")
+        ],
         [
             InlineKeyboardButton(text="🆕 Свежие заказы ленты", callback_data="fl_recent_orders"),
             InlineKeyboardButton(text="⭐️ Избранные заказы", callback_data="fl_favorite_orders")
@@ -113,7 +117,8 @@ def settings_menu_keyboard(settings) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def fl_settings_keyboard(settings) -> InlineKeyboardMarkup:
-    """Подменю детальной настройки биржи FL.ru"""
+    """Подменю детальной настройки биржи FL.ru с тумблером Live-режима"""
+    live_label = "🟢 ВКЛ (15-20с)" if getattr(settings, "fl_live_mode", True) else "🔴 ВЫКЛ"
     fl_notif = "🟢 Вкл" if settings.fl_enabled else "🔴 Выкл"
     cats_count = len(settings.fl_categories or [])
     budget_label = f"{settings.fl_min_price:,} ₽".replace(",", " ") if settings.fl_min_price else "Любой"
@@ -124,6 +129,9 @@ def fl_settings_keyboard(settings) -> InlineKeyboardMarkup:
     nw_count = len(settings.fl_negative_words or [])
 
     buttons = [
+        [
+            InlineKeyboardButton(text=f"⚡ Live-мониторинг: {live_label}", callback_data="toggle_fl_live")
+        ],
         [
             InlineKeyboardButton(text=f"🔔 Уведомления FL: {fl_notif}", callback_data="toggle_notif_fl"),
             InlineKeyboardButton(text=f"🏷 Категории ({cats_count})", callback_data="fl_settings_cats")

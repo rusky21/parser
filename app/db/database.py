@@ -57,6 +57,7 @@ async def init_db():
             "ALTER TABLE telegram_user_settings ADD COLUMN notify_sound BOOLEAN DEFAULT 1",
             "ALTER TABLE telegram_user_settings ADD COLUMN notify_captcha BOOLEAN DEFAULT 1",
             "ALTER TABLE telegram_user_settings ADD COLUMN default_limit INTEGER DEFAULT 50",
+            "ALTER TABLE telegram_user_settings ADD COLUMN fl_live_mode BOOLEAN DEFAULT 1",
         ]
         for mig in migrations:
             try:

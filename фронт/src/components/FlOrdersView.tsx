@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Briefcase,
   Star,
@@ -7,9 +7,39 @@ import {
   Search,
   RefreshCw,
   Flame,
-  Crown
+  Crown,
+  Zap,
+  Volume2,
+  VolumeX,
+  ShieldCheck
 } from 'lucide-react';
 import { api, type BackendFLOrder, type FLCategory } from '../api/client';
+
+// Мягкий синтезированный звук уведомления через Web Audio API (без внешних mp3 файлов)
+const playChime = () => {
+  try {
+    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12); // A5
+
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start();
+    osc.stop(ctx.currentTime + 0.36);
+  } catch {
+    // В некоторых браузерах AudioContext блокируется до первого жеста пользователя
+  }
+};
 
 export const FlOrdersView: React.FC = () => {
   const [orders, setOrders] = useState<BackendFLOrder[]>([]);
@@ -22,25 +52,75 @@ export const FlOrdersView: React.FC = () => {
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [stats, setStats] = useState<{ total: number; favorites: number }>({ total: 0, favorites: 0 });
 
-  // Загрузка категорий при монтировании
+  // Live-режим: тумблер, обратный отсчет (15-20с) и статус воркера
+  const [liveEnabled, setLiveEnabled] = useState<boolean>(true);
+  const [secondsUntilNextPoll, setSecondsUntilNextPoll] = useState<number>(18);
+  const [workerStatus, setWorkerStatus] = useState<'idle' | 'polling'>('idle');
+  const [lastPollTime, setLastPollTime] = useState<string>('');
+  const [newLiveOrderIds, setNewLiveOrderIds] = useState<Set<number>>(new Set());
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+
+  // Рефы для доступа к актуальному состоянию внутри WebSocket колбэков
+  const liveEnabledRef = useRef(liveEnabled);
+  liveEnabledRef.current = liveEnabled;
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
+
+  // Загрузка категорий и начального статуса воркера при монтировании
   useEffect(() => {
     api.getFlCategories().then(setCategories).catch(console.error);
+    api.getFlWorkerStatus().then((st) => {
+      if (st.next_poll_in) setSecondsUntilNextPoll(Math.round(st.next_poll_in));
+      if (st.last_poll_at) setLastPollTime(new Date(st.last_poll_at).toLocaleTimeString('ru-RU'));
+    }).catch(console.error);
   }, []);
+
+  // Локальный таймер обратного отсчета для плавной анимации секунд до следующей проверки
+  useEffect(() => {
+    if (!liveEnabled) return;
+    const interval = setInterval(() => {
+      setSecondsUntilNextPoll((prev) => {
+        if (prev <= 1) {
+          return 18; // Сброс до получения тика от бэкенда
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [liveEnabled]);
 
   // Загрузка заказов при смене фильтров
   useEffect(() => {
     loadOrders();
   }, [selectedCat, filterMode, minPrice]);
 
-  // Подписка на глобальный WebSocket для мгновенных обновлений
+  // Подписка на глобальный WebSocket для мгновенных Live-обновлений
   useEffect(() => {
     const ws = api.connectGlobalWebSocket({
       onNewFlOrder: (newOrder) => {
+        if (!liveEnabledRef.current) return;
         setOrders((prev) => {
           if (prev.some((o) => o.id === newOrder.id)) return prev;
           return [newOrder, ...prev];
         });
+        setNewLiveOrderIds((prev) => new Set(prev).add(newOrder.id));
         setStats((prev) => ({ ...prev, total: prev.total + 1 }));
+        if (soundEnabledRef.current) {
+          playChime();
+        }
+      },
+      onFlPollTick: (tick) => {
+        if (tick.status === 'polling') {
+          setWorkerStatus('polling');
+        } else {
+          setWorkerStatus('idle');
+          if (tick.next_poll_in) {
+            setSecondsUntilNextPoll(Math.round(tick.next_poll_in));
+          }
+          if (tick.last_poll_at) {
+            setLastPollTime(new Date(tick.last_poll_at).toLocaleTimeString('ru-RU'));
+          }
+        }
       },
       onFlOrderUpdated: (data) => {
         setOrders((prev) =>
@@ -95,7 +175,7 @@ export const FlOrdersView: React.FC = () => {
         loadOrders();
         setRefreshing(false);
       }, 1500);
-    } catch (e) {
+    } catch {
       setRefreshing(false);
     }
   };
@@ -137,7 +217,7 @@ export const FlOrdersView: React.FC = () => {
     <div className="space-y-6">
       {/* 1. Header Toolbar */}
       <div className="bg-[#0b0b0e]/90 border border-white/10 rounded-2xl p-4 sm:p-5 backdrop-blur-md shadow-2xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
           {/* Sub-tabs */}
           <div className="flex items-center gap-1.5 p-1 bg-white/5 border border-white/10 rounded-xl">
             <button
@@ -208,18 +288,81 @@ export const FlOrdersView: React.FC = () => {
             />
           </div>
 
-          {/* Refresh Action */}
-          <button
-            onClick={handleManualRefresh}
-            disabled={refreshing}
-            className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/15 active:scale-95 border border-white/10 rounded-xl text-xs font-medium text-white transition-all cursor-pointer self-start md:self-auto shrink-0"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>{refreshing ? 'Опрос...' : 'Проверить FL'}</span>
-          </button>
+          {/* Right Controls: LIVE Toggle + Refresh */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* ⚡ LIVE Toggle Switch & Status Widget */}
+            <div className={`flex items-center gap-2.5 px-3 py-1.5 rounded-xl border transition-all ${
+              liveEnabled
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.12)]'
+                : 'bg-white/[0.04] border-white/10 text-neutral-500'
+            }`}>
+              <button
+                type="button"
+                onClick={() => setLiveEnabled(!liveEnabled)}
+                className="flex items-center gap-2 cursor-pointer focus:outline-none select-none"
+                title={liveEnabled ? "Live-мониторинг активен (опрос каждые 15-20 сек). Нажмите, чтобы приостановить." : "Live-мониторинг на паузе. Нажмите, чтобы включить."}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Zap className={`w-3.5 h-3.5 ${liveEnabled ? 'text-emerald-400 fill-emerald-400 animate-pulse' : 'text-neutral-500'}`} />
+                  <span className="text-xs font-bold tracking-wider">LIVE</span>
+                </div>
+
+                {/* Beacon Indicator */}
+                {liveEnabled ? (
+                  <span className="flex h-2 w-2 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                ) : (
+                  <span className="inline-flex rounded-full h-2 w-2 bg-neutral-600"></span>
+                )}
+
+                {/* Countdown / Status Label */}
+                <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded-md ${
+                  liveEnabled
+                    ? (workerStatus === 'polling' ? 'bg-emerald-500/20 text-emerald-300 font-medium' : 'bg-black/30 text-emerald-300')
+                    : 'bg-neutral-800 text-neutral-500'
+                }`}>
+                  {liveEnabled
+                    ? (workerStatus === 'polling' ? '⏳ Опрос FL...' : `${secondsUntilNextPoll}с`)
+                    : 'Пауза'}
+                </span>
+
+                {/* Pill Switch */}
+                <div className={`w-8 h-4 rounded-full transition-colors relative p-0.5 ml-0.5 ${liveEnabled ? 'bg-emerald-500' : 'bg-neutral-700'}`}>
+                  <div className={`w-3 h-3 rounded-full bg-white transition-transform ${liveEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                </div>
+              </button>
+
+              {/* Sound Notification Toggle */}
+              <button
+                type="button"
+                onClick={() => setSoundEnabled(!soundEnabled)}
+                title={soundEnabled ? 'Звуковое оповещение при новом заказе включено' : 'Звуковое оповещение отключено'}
+                className={`p-1 rounded-md transition-colors cursor-pointer ${
+                  soundEnabled
+                    ? 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/20'
+                    : 'text-neutral-600 hover:text-neutral-400 hover:bg-white/5'
+                }`}
+              >
+                {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+
+            {/* Manual Refresh Button */}
+            <button
+              onClick={handleManualRefresh}
+              disabled={refreshing}
+              className="flex items-center gap-2 px-3.5 py-2 bg-white/10 hover:bg-white/15 active:scale-95 border border-white/10 rounded-xl text-xs font-medium text-white transition-all cursor-pointer shrink-0"
+              title="Принудительно запросить свежие проекты сейчас"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              <span>{refreshing ? 'Опрос...' : 'Проверить FL'}</span>
+            </button>
+          </div>
         </div>
 
-        {/* Categories Pills & Budget Slider */}
+        {/* Categories Pills, Budget Quick-select & Anti-ban Badge */}
         <div className="mt-4 pt-4 border-t border-white/5 flex flex-wrap items-center justify-between gap-3">
           {/* Categories */}
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -249,22 +392,35 @@ export const FlOrdersView: React.FC = () => {
             ))}
           </div>
 
-          {/* Min Price Quick Buttons */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] font-mono text-neutral-500 uppercase mr-1">Бюджет:</span>
-            {[0, 10000, 25000, 50000].map((bp) => (
-              <button
-                key={bp}
-                onClick={() => setMinPrice(bp)}
-                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
-                  minPrice === bp
-                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 font-medium'
-                    : 'bg-white/[0.03] border-white/5 text-neutral-400 hover:text-white'
-                }`}
-              >
-                {bp === 0 ? 'Все' : `${bp / 1000}к+ ₽`}
-              </button>
-            ))}
+          {/* Right: Min Price + Anti-ban Protection Indicator */}
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Min Price Quick Buttons */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-mono text-neutral-500 uppercase mr-1">Бюджет:</span>
+              {[0, 10000, 25000, 50000].map((bp) => (
+                <button
+                  key={bp}
+                  onClick={() => setMinPrice(bp)}
+                  className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
+                    minPrice === bp
+                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 font-medium'
+                      : 'bg-white/[0.03] border-white/5 text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  {bp === 0 ? 'Все' : `${bp / 1000}к+ ₽`}
+                </button>
+              ))}
+            </div>
+
+            {/* Anti-Ban Shield Badge */}
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.03] border border-white/10 text-[10px] font-mono text-neutral-400"
+              title="Безопасный цикл: ротация заголовков, джиттер 15-20 сек и round-robin исключают блокировку IP"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Защита IP (15-20с)</span>
+              {lastPollTime && <span className="text-neutral-500">| {lastPollTime}</span>}
+            </div>
           </div>
         </div>
       </div>
@@ -282,22 +438,33 @@ export const FlOrdersView: React.FC = () => {
           <p className="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
             {filterMode === 'favorite'
               ? 'В избранном пока нет заказов. Нажмите звёздочку на любой карточке, чтобы добавить.'
-              : 'Фоновый воркер опрашивает ленту FL.ru каждые 40 сек. Попробуйте нажать «Проверить FL» или изменить фильтры.'}
+              : 'Фоновый воркер опрашивает ленту FL.ru каждые 15-20 сек. Попробуйте нажать «Проверить FL» или изменить фильтры.'}
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3.5">
           {displayedOrders.map((ord) => {
             const isNegotiable = ord.is_negotiable || !ord.price_rub;
+            const isNewLive = newLiveOrderIds.has(ord.id);
+
             return (
               <div
                 key={ord.id}
-                className="bg-[#0b0b0e]/90 hover:bg-[#121217] border border-white/10 hover:border-white/20 rounded-2xl p-4 sm:p-5 transition-all shadow-lg group relative"
+                className={`bg-[#0b0b0e]/90 hover:bg-[#121217] rounded-2xl p-4 sm:p-5 transition-all shadow-lg group relative border ${
+                  isNewLive
+                    ? 'border-emerald-500/60 shadow-[0_0_20px_rgba(16,185,129,0.18)] ring-1 ring-emerald-500/40'
+                    : 'border-white/10 hover:border-white/20'
+                }`}
               >
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                   {/* Left: Title + Badges + Description */}
                   <div className="space-y-2 flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
+                      {isNewLive && (
+                        <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold animate-pulse">
+                          <Zap className="w-3 h-3 fill-current" /> ⚡ LIVE СВЕЖИЙ
+                        </span>
+                      )}
                       {ord.is_urgent && (
                         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono bg-rose-500/15 border border-rose-500/30 text-rose-300 font-medium">
                           <Flame className="w-3 h-3 text-rose-400" /> Срочно

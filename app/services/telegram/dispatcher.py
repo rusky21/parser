@@ -120,6 +120,10 @@ class TelegramDispatcher:
                 for sub in subscribers:
                     chat_id = sub.chat_id
 
+                    # 0. Проверка тумблера Live-режима FL (если отключен — не спамим в реальном времени)
+                    if not getattr(sub, "fl_live_mode", True):
+                        continue
+
                     # 1. Проверка категории
                     user_cats = sub.fl_categories or []
                     if user_cats and order.category_id:

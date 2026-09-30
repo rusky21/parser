@@ -264,6 +264,7 @@ class TelegramUserSettings(Base):
     notify_sound: Mapped[bool] = mapped_column(Boolean, default=True)  # Звуковые уведомления
     notify_captcha: Mapped[bool] = mapped_column(Boolean, default=True)  # Оповещения о капче
     default_limit: Mapped[int] = mapped_column(Integer, default=50)  # Лимит сбора по умолчанию
+    fl_live_mode: Mapped[bool] = mapped_column(Boolean, default=True)  # Live-режим мониторинга FL.ru (15-20 сек)
 
     user: Mapped["TelegramUser"] = relationship("TelegramUser", back_populates="settings")
 

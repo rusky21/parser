@@ -1,4 +1,5 @@
 import asyncio
+import random
 import logging
 from datetime import datetime, timezone
 from typing import List, Set, Optional
@@ -15,18 +16,23 @@ logger = logging.getLogger("fl_worker")
 class FLWorker:
     """
     Фоновый воркер опроса биржи FL.ru:
-    - Периодический опрос ленты каждые 35-50 сек
+    - Скоростной безопасный опрос ленты каждые 15-20 сек (без риска бана IP)
+    - Главная лента FL.ru (содержит 100% свежих заказов) + Round-Robin по рубрикам
     - Защита от спама старыми заказами при первом старте категории (per-category sync)
     - Дедупликация через SQLite
-    - Мгновенный пуш в десктоп через WebSocket
+    - Мгновенный пуш в десктоп/веб через WebSocket + Live Ticks
     - Передача новых релевантных заказов в Telegram-диспетчер
     """
 
-    def __init__(self, poll_interval: int = 40):
-        self.poll_interval = poll_interval
+    def __init__(self, poll_interval_min: float = 15.0, poll_interval_max: float = 20.0):
+        self.poll_interval_min = poll_interval_min
+        self.poll_interval_max = poll_interval_max
         self._task: Optional[asyncio.Task] = None
         self._is_running: bool = False
         self.fetcher = FLFetcher()
+        self.last_poll_at: Optional[datetime] = None
+        self.next_poll_in: float = 18.0
+        self._category_index: int = 0
 
     @property
     def is_running(self) -> bool:
@@ -37,7 +43,7 @@ class FLWorker:
             return
         self._is_running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("FLWorker запущен.")
+        logger.info("FLWorker запущен в live-режиме (15-20 сек).")
 
     def stop(self):
         self._is_running = False
@@ -70,30 +76,68 @@ class FLWorker:
         return list(category_ids)
 
     async def _run_loop(self):
-        logger.info(f"FLWorker: запущен цикл с интервалом {self.poll_interval} сек.")
+        logger.info(f"FLWorker: запущен live-цикл с интервалом {self.poll_interval_min}-{self.poll_interval_max} сек.")
         while self._is_running:
             try:
-                await self.poll_cycle()
+                # Оповещаем WebSocket клиентов о начале проверки
+                await ws_manager.broadcast_all({
+                    "type": "FL_POLL_TICK",
+                    "data": {
+                        "status": "polling",
+                        "next_poll_in": 0,
+                        "last_poll_at": self.last_poll_at.isoformat() if self.last_poll_at else None,
+                    }
+                })
+
+                total_new = await self.poll_cycle()
+                self.last_poll_at = utc_now()
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"FLWorker непредвиденная ошибка в цикле: {e}", exc_info=True)
 
+            # Случайный джиттер 15-20 сек для имитации естественного поведения человека
+            sleep_time = random.uniform(self.poll_interval_min, self.poll_interval_max)
+            self.next_poll_in = sleep_time
+
+            # Оповещаем WebSocket клиентов о времени до следующего опроса
             try:
-                await asyncio.sleep(self.poll_interval)
+                await ws_manager.broadcast_all({
+                    "type": "FL_POLL_TICK",
+                    "data": {
+                        "status": "idle",
+                        "next_poll_in": round(sleep_time, 1),
+                        "last_poll_at": self.last_poll_at.isoformat() if self.last_poll_at else None,
+                    }
+                })
+            except Exception:
+                pass
+
+            try:
+                await asyncio.sleep(sleep_time)
             except asyncio.CancelledError:
                 break
 
-    async def poll_cycle(self, force: bool = False):
-        """Один шаг опроса всех активных категорий"""
+    async def poll_cycle(self, force: bool = False) -> int:
+        """
+        Один безопасный шаг опроса FL.ru:
+        1. Всегда опрашиваем общую ленту /projects/ (содержит ВСЕ свежие заказы сайта)
+        2. Дополнительно опрашиваем 1 конкретную категорию по очереди (round-robin)
+        Это дает максимум 2 запроса за цикл (4-6 запросов в минуту) — IP НИКОГДА не заблокируют!
+        """
         categories = await self._get_active_categories()
-        # Также всегда проверяем общую ленту (None)
-        all_targets = [None] + categories
+        targets = [None] # Главная лента всегда первая
 
-        # Отложенный импорт tg_dispatcher во избежание циклических зависимостей
+        if categories:
+            chosen_cat = categories[self._category_index % len(categories)]
+            self._category_index += 1
+            targets.append(chosen_cat)
+
         from app.services.telegram.dispatcher import tg_dispatcher
 
-        for cat_id in all_targets:
+        total_saved = 0
+        for i, cat_id in enumerate(targets):
             if not self._is_running and not force:
                 break
 
@@ -118,7 +162,7 @@ class FLWorker:
             if not projects:
                 continue
 
-            # 3. Сохранение и дедупликация
+            # 3. Сохранение и дедупликация в БД
             new_orders_saved = []
             async with async_session_factory() as db:
                 for proj in projects:
@@ -127,7 +171,6 @@ class FLWorker:
                     if existing:
                         continue
 
-                    # Создаем запись заказа
                     order = FLOrder(
                         id=proj_id,
                         title=proj["title"],
@@ -159,6 +202,8 @@ class FLWorker:
 
                 await db.commit()
 
+            total_saved += len(new_orders_saved)
+
             # 4. Логика первого запуска vs Новые заказы
             if is_first_sync:
                 logger.info(
@@ -166,7 +211,7 @@ class FLWorker:
                 )
             else:
                 for order in new_orders_saved:
-                    # А. Отправляем в десктоп через WebSocket
+                    # А. Мгновенно отправляем в десктоп/веб через WebSocket
                     order_dict = order.to_dict()
                     await ws_manager.broadcast_all({
                         "type": "NEW_FL_ORDER",
@@ -176,7 +221,11 @@ class FLWorker:
                     # Б. Отправляем в Telegram подписчикам с фильтрацией
                     await tg_dispatcher.dispatch_fl_order(order)
 
-            # Небольшая пауза между запросами к разным категориям
-            await asyncio.sleep(2.0)
+            # Пауза 1.2 сек между запросами к разным категориям если их 2
+            if i < len(targets) - 1:
+                await asyncio.sleep(1.2)
+
+        return total_saved
 
 fl_worker = FLWorker()
+

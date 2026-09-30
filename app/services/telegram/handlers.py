@@ -148,20 +148,41 @@ async def menu_leads(message: Message):
     )
     await message.answer(text, parse_mode="HTML", reply_markup=leads_filter_keyboard(only_tg))
 
+@router.message(Command("live"))
+async def cmd_live(message: Message):
+    async with async_session_factory() as db:
+        settings = await db.get(TelegramUserSettings, message.chat.id)
+        if not settings:
+            settings = TelegramUserSettings(chat_id=message.chat.id, fl_live_mode=True)
+            db.add(settings)
+        else:
+            settings.fl_live_mode = not getattr(settings, "fl_live_mode", True)
+        await db.commit()
+        val = settings.fl_live_mode
+
+    status_str = "🟢 ВКЛЮЧЕН (опрос ленты каждые 15-20 сек)" if val else "🔴 ОТКЛЮЧЕН (на паузе)"
+    text = (
+        f"⚡ <b>Live-режим FL.ru:</b> {status_str}\n\n"
+        f"Вы можете быстро переключать его кнопкой ниже:"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=fl_menu_keyboard(val))
+
 @router.message(F.text == "💼 Заказы с FL.ru")
 async def menu_fl(message: Message):
     settings = await get_or_create_user(message.chat.id)
     cats_count = len(settings.fl_categories or [])
     min_price_str = f"{settings.fl_min_price:,} ₽".replace(",", " ") if settings.fl_min_price else "Любой"
+    live_status = "🟢 ВКЛ (каждые 15-20с)" if getattr(settings, "fl_live_mode", True) else "🔴 ВЫКЛ"
 
     text = (
         f"💼 <b>Лента заказов биржи FL.ru</b>\n\n"
+        f"• Live-мониторинг: <b>{live_status}</b>\n"
         f"• Активных категорий: <b>{cats_count}</b>\n"
         f"• Минимальный бюджет: <b>{min_price_str}</b>\n"
         f"• Заказы «По договоренности»: <b>доставляются всегда</b>\n\n"
-        f"Выберите действие:"
+        f"Переключайте Live-режим или выберите действие ниже ⬇️"
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=fl_menu_keyboard())
+    await message.answer(text, parse_mode="HTML", reply_markup=fl_menu_keyboard(getattr(settings, "fl_live_mode", True)))
 
 @router.message(F.text == "⚙️ Настройки и фильтры")
 async def menu_settings(message: Message):
@@ -276,8 +297,35 @@ async def cb_leads_stats(call: CallbackQuery):
 async def cb_to_fl_menu(call: CallbackQuery):
     settings = await get_or_create_user(call.message.chat.id)
     text = "💼 <b>Лента заказов биржи FL.ru</b>"
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=fl_menu_keyboard())
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=fl_menu_keyboard(getattr(settings, "fl_live_mode", True)))
     await call.answer()
+
+@router.callback_query(F.data == "toggle_fl_live")
+async def cb_toggle_fl_live(call: CallbackQuery):
+    async with async_session_factory() as db:
+        settings = await db.get(TelegramUserSettings, call.message.chat.id)
+        if not settings:
+            settings = TelegramUserSettings(chat_id=call.message.chat.id, fl_live_mode=True)
+            db.add(settings)
+        else:
+            settings.fl_live_mode = not getattr(settings, "fl_live_mode", True)
+        await db.commit()
+        val = settings.fl_live_mode
+
+    if val:
+        alert_text = "⚡ Live-мониторинг FL.ru ВКЛЮЧЕН!\nСвежие заказы с проверкой каждые 15-20 сек будут мгновенно приходить в этот чат."
+    else:
+        alert_text = "⏸ Live-мониторинг FL.ru ОТКЛЮЧЕН.\nАвто-уведомления на паузе. Вы можете просматривать заказы вручную по кнопке «🆕 Свежие заказы»."
+
+    await call.answer(alert_text, show_alert=True)
+
+    try:
+        if "Детальные настройки" in (call.message.text or "") or "Фильтры" in (call.message.text or ""):
+            await call.message.edit_reply_markup(reply_markup=fl_settings_keyboard(settings))
+        else:
+            await call.message.edit_reply_markup(reply_markup=fl_menu_keyboard(val))
+    except Exception:
+        pass
 
 @router.callback_query(F.data == "fl_recent_orders")
 async def cb_fl_recent(call: CallbackQuery):

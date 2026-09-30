@@ -187,3 +187,13 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         "favorite_orders": favorites,
         "last_synced_at": last_sync.synced_at.isoformat() if last_sync else None
     }
+
+@router.get("/worker/status", summary="Статус фонового воркера FL.ru")
+async def get_worker_status():
+    return {
+        "is_running": fl_worker.is_running,
+        "poll_interval_min": fl_worker.poll_interval_min,
+        "poll_interval_max": fl_worker.poll_interval_max,
+        "next_poll_in": round(fl_worker.next_poll_in, 1),
+        "last_poll_at": fl_worker.last_poll_at.isoformat() if fl_worker.last_poll_at else None,
+    }
