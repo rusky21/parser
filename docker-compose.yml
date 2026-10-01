@@ -7,9 +7,8 @@ services:
     restart: unless-stopped
     init: true                      # Предотвращает накопление zombie-процессов Playwright
     shm_size: '2gb'                 # Защита Chromium от OOM-крэшей на сервере
-    ports:
-      # ИЗОЛИРОВАНО: Слушает только локальный интерфейс хоста, не торчит в интернет напрямую
-      - "127.0.0.1:8000:8000"
+    expose:
+      - "8000"                      # Доступен внутри сети Docker только для Nginx
     environment:
       - HEADLESS=1
       - PORT=8000
@@ -25,3 +24,15 @@ services:
       - ./leadhunter.db:/app/leadhunter.db
       - ./exports:/app/exports
       - ./browser_profile:/app/browser_profile
+
+  nginx:
+    image: nginx:alpine
+    container_name: leadhunter-nginx
+    restart: unless-stopped
+    ports:
+      # Внешний порт (по умолчанию 8080, поддерживается Cloudflare Proxy из коробки)
+      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - leadhunter

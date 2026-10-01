@@ -42,48 +42,52 @@ log_header()  {
     echo -e "${NC}"
 }
 
-# Функция освобождения 80 порта от сторонних веб-серверов (Apache2, Caddy, зависшие процессы)
-ensure_port_80_free() {
-    # 1. Проверяем и отключаем Apache2, если он установлен и активен
-    if command -v apache2 >/dev/null 2>&1 || systemctl list-unit-files 2>/dev/null | grep -q "apache2.service"; then
-        if systemctl is-active --quiet apache2 2>/dev/null; then
-            log_warn "Обнаружен активный Apache2, занимающий 80 порт. Остановка и отключение Apache2..."
-            $SUDO systemctl stop apache2 2>/dev/null || true
-            $SUDO systemctl disable apache2 2>/dev/null || true
-        fi
+# Функция проверки занятости порта
+is_port_in_use() {
+    local PORT=$1
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlpn "sport = :$PORT" 2>/dev/null | grep -q ":$PORT " && return 0
     fi
-
-    # 2. Проверяем любой сторонний процесс, слушающий 80 порт
-    local OCCUPIED_PIDS=()
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -ti ":$PORT" >/dev/null 2>&1 && return 0
+    fi
     if command -v fuser >/dev/null 2>&1; then
-        OCCUPIED_PIDS+=($($SUDO fuser 80/tcp 2>/dev/null || true))
+        fuser "$PORT/tcp" >/dev/null 2>&1 && return 0
     fi
-    if [ ${#OCCUPIED_PIDS[@]} -eq 0 ] && command -v lsof >/dev/null 2>&1; then
-        OCCUPIED_PIDS+=($($SUDO lsof -ti :80 2>/dev/null || true))
-    fi
+    return 1
+}
 
-    for pid in "${OCCUPIED_PIDS[@]}"; do
-        if [ -n "$pid" ]; then
-            local PROC_NAME
-            PROC_NAME=$(ps -p "$pid" -o comm= 2>/dev/null || echo "PID $pid")
-            # Если это не сам Nginx
-            if [[ "$PROC_NAME" != *"nginx"* ]]; then
-                log_warn "Порт 80 занят процессом: $PROC_NAME (PID: $pid). Освобождение порта..."
-                $SUDO kill -9 "$pid" 2>/dev/null || true
-            fi
+# Автоматический поиск свободного порта (с приоритетом портов, поддерживаемых Cloudflare)
+find_first_free_port() {
+    local CANDIDATES=(8080 8880 2052 2082 8081 8088 9000)
+    for p in "${CANDIDATES[@]}"; do
+        if ! is_port_in_use "$p"; then
+            echo "$p"
+            return
         fi
     done
-    sleep 1
+    # Если все заняты — берем случайный свободный от 8080
+    local p=8080
+    while is_port_in_use "$p"; do
+        p=$((p + 1))
+    done
+    echo "$p"
 }
 
 # ----------------------------------------------------------------------
 # 1. Проверка системных пакетов и установка зависимостей
 # ----------------------------------------------------------------------
 check_and_install_dependencies() {
-    log_info "Проверка системного окружения Ubuntu..."
+    log_info "Проверка окружения Ubuntu..."
+
+    # Восстановление dpkg, если предыдущая установка nginx прервалась
+    $SUDO dpkg --configure -a 2>/dev/null || true
+    # Если на хосте пытался запуститься nginx и упал из-за 80 порта — останавливаем хостовый nginx
+    $SUDO systemctl stop nginx 2>/dev/null || true
+    $SUDO systemctl disable nginx 2>/dev/null || true
 
     local PACKAGES_TO_INSTALL=()
-    for pkg in curl openssl ufw sed grep psmisc lsof; do
+    for pkg in curl openssl ufw sed grep; do
         if ! command -v "$pkg" >/dev/null 2>&1; then
             PACKAGES_TO_INSTALL+=("$pkg")
         fi
@@ -118,27 +122,6 @@ check_and_install_dependencies() {
         DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq docker-compose-plugin
         log_success "Docker Compose plugin установлен."
     fi
-
-    # Восстановление прерванных установок dpkg, если они были
-    $SUDO dpkg --configure -a 2>/dev/null || true
-
-    # Освобождение 80 порта перед установкой или запуском Nginx
-    ensure_port_80_free
-
-    # Проверка и установка Nginx
-    if ! command -v nginx >/dev/null 2>&1; then
-        log_warn "Веб-сервер Nginx не найден. Установка Nginx..."
-        $SUDO apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y nginx || true
-        # Повторное освобождение порта и повторная конфигурация пакета
-        ensure_port_80_free
-        $SUDO dpkg --configure -a 2>/dev/null || true
-    fi
-
-    ensure_port_80_free
-    $SUDO systemctl enable nginx 2>/dev/null || true
-    $SUDO systemctl restart nginx 2>/dev/null || true
-    log_success "Nginx проверен и активен."
 }
 
 # ----------------------------------------------------------------------
@@ -149,21 +132,29 @@ configure_environment() {
     echo -e "Скрипт запросит необходимые данные для запуска защищенного веб-сервиса."
     echo -e "Значения в квадратных скобках [по умолчанию] принимаются нажатием ${BOLD}Enter${NC}.\n"
 
-    # Получаем внешний IP сервера в качестве подсказки
     SERVER_IP=$(curl -s -4 ifconfig.me || curl -s -4 icanhazip.com || echo "127.0.0.1")
 
-    # 1. Доменное имя
-    echo -e "${CYAN}${BOLD}[1/5] Домен или поддомен:${NC}"
+    # 1. Свободный внешний порт
+    DEFAULT_PORT=$(find_first_free_port)
+    echo -e "${CYAN}${BOLD}[1/6] Внешний порт веб-интерфейса:${NC}"
+    echo -e "80-й порт на сервере занят другим приложением. Сервис запустится на свободном порту."
+    echo -e "Порт ${GREEN}${BOLD}$DEFAULT_PORT${NC} свободен и нативно поддерживается Cloudflare Proxy."
+    read -rp "Порт для запуска [$DEFAULT_PORT]: " INPUT_PORT
+    WEB_PORT="${INPUT_PORT:-$DEFAULT_PORT}"
+    WEB_PORT="$(echo "$WEB_PORT" | tr -d ' ')"
+    echo -e "  ➜ Выбранный порт: ${GREEN}${BOLD}$WEB_PORT${NC}\n"
+
+    # 2. Доменное имя
+    echo -e "${CYAN}${BOLD}[2/6] Домен или поддомен:${NC}"
     echo -e "Укажите домен, направленный через Cloudflare Proxy на IP этого сервера ($SERVER_IP)."
     read -rp "Доменное имя [например: lead.mydomain.ru или $SERVER_IP]: " INPUT_DOMAIN
     DOMAIN="${INPUT_DOMAIN:-$SERVER_IP}"
     DOMAIN="$(echo "$DOMAIN" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
     echo -e "  ➜ Домен: ${GREEN}${BOLD}$DOMAIN${NC}\n"
 
-    # 2. Токен Telegram-бота
-    echo -e "${CYAN}${BOLD}[2/5] Telegram-бот (@BotFather):${NC}"
+    # 3. Токен Telegram-бота
+    echo -e "${CYAN}${BOLD}[3/6] Telegram-бот (@BotFather):${NC}"
     echo -e "Бот управляет парсингом, присылает лиды и заказы с биржи FL.ru в реальном времени."
-    echo -e "Если у вас еще нет бота, создайте его в Telegram через ${BOLD}@BotFather${NC} и скопируйте токен."
     read -rp "Токен бота (нажмите Enter, чтобы пропустить): " INPUT_TG_TOKEN
     TG_TOKEN="$(echo "$INPUT_TG_TOKEN" | tr -d ' ')"
 
@@ -178,23 +169,23 @@ configure_environment() {
     fi
     echo ""
 
-    # 3. Email администратора
-    echo -e "${CYAN}${BOLD}[3/5] Учетная запись: Email администратора:${NC}"
+    # 4. Email администратора
+    echo -e "${CYAN}${BOLD}[4/6] Учетная запись: Email администратора:${NC}"
     read -rp "Email администратора [admin@lead.pro]: " INPUT_ADMIN_EMAIL
     ADMIN_EMAIL="${INPUT_ADMIN_EMAIL:-admin@lead.pro}"
     ADMIN_EMAIL="$(echo "$ADMIN_EMAIL" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
     echo -e "  ➜ Логин: ${GREEN}${BOLD}$ADMIN_EMAIL${NC}\n"
 
-    # 4. Пароль администратора
+    # 5. Пароль администратора
     AUTO_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9!@#%')
-    echo -e "${CYAN}${BOLD}[4/5] Учетная запись: Пароль администратора:${NC}"
+    echo -e "${CYAN}${BOLD}[5/6] Учетная запись: Пароль администратора:${NC}"
     echo -e "Сгенерирован надежный пароль по умолчанию: ${YELLOW}${BOLD}$AUTO_PASS${NC}"
     read -rp "Введите свой пароль [или Enter для использования сгенерированного]: " INPUT_ADMIN_PASS
     ADMIN_PASSWORD="${INPUT_ADMIN_PASS:-$AUTO_PASS}"
     echo -e "  ➜ Пароль: ${GREEN}${BOLD}$ADMIN_PASSWORD${NC}\n"
 
-    # 5. Секретный ключ JWT (генерируется строго автоматически)
-    echo -e "${CYAN}${BOLD}[5/5] Криптографический ключ безопасности (JWT):${NC}"
+    # 6. Секретный ключ JWT
+    echo -e "${CYAN}${BOLD}[6/6] Криптографический ключ безопасности (JWT):${NC}"
     SECRET_KEY=$(openssl rand -hex 32)
     echo -e "  ➜ SECRET_KEY автоматически сгенерирован (32 байта криптостойкой энтропии).\n"
 
@@ -208,6 +199,7 @@ configure_environment() {
 # Сетевые параметры
 HOST=0.0.0.0
 PORT=8000
+WEB_PORT=$WEB_PORT
 DOMAIN=$DOMAIN
 
 # Telegram-бот
@@ -225,71 +217,35 @@ EOF
 
     chmod 600 .env
     log_success "Файл конфигурации .env успешно сформирован и защищен (права 600)."
+
+    # Обновление порта в nginx.conf
+    sed -i -E "s/listen [0-9]+;/listen $WEB_PORT;/g" nginx.conf
+    sed -i -E "s/listen \[::\]:[0-9]+;/listen \[::\]:$WEB_PORT;/g" nginx.conf
+    log_success "Конфигурация Nginx настроена на порт $WEB_PORT."
 }
 
 # ----------------------------------------------------------------------
-# 3. Настройка и активация Nginx для Cloudflare Proxy
-# ----------------------------------------------------------------------
-configure_nginx() {
-    log_info "Конфигурация веб-сервера Nginx..."
-
-    local DOMAIN
-    DOMAIN=$(grep -E '^DOMAIN=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ' || echo "localhost")
-    if [ -z "$DOMAIN" ]; then
-        DOMAIN="localhost"
-    fi
-
-    local NGINX_CONF_DEST="/etc/nginx/sites-available/leadhunter.conf"
-    local NGINX_LINK="/etc/nginx/sites-enabled/leadhunter.conf"
-
-    # Создание конфигурации на основе готового шаблона nginx.conf
-    $SUDO sed "s/server_name your-domain.com;/server_name $DOMAIN;/" nginx.conf > /tmp/leadhunter.nginx.tmp
-    $SUDO mv /tmp/leadhunter.nginx.tmp "$NGINX_CONF_DEST"
-    $SUDO chmod 644 "$NGINX_CONF_DEST"
-
-    # Активация симлинка
-    if [ ! -L "$NGINX_LINK" ]; then
-        $SUDO ln -sf "$NGINX_CONF_DEST" "$NGINX_LINK"
-    fi
-
-    # Отключение default страницы Nginx, если она занимает 80 порт
-    if [ -L "/etc/nginx/sites-enabled/default" ]; then
-        $SUDO rm -f "/etc/nginx/sites-enabled/default"
-        log_info "Отключен стандартный сайт Nginx (default)."
-    fi
-
-    # Тестирование синтаксиса
-    if $SUDO nginx -t >/dev/null 2>&1; then
-        $SUDO systemctl reload nginx
-        log_success "Конфигурация Nginx валидна и успешно перезагружена."
-    else
-        log_error "Ошибка проверки конфигурации Nginx!"
-        $SUDO nginx -t
-        exit 1
-    fi
-}
-
-# ----------------------------------------------------------------------
-# 4. Настройка UFW Firewall (Защита локального порта)
+# 3. Настройка UFW Firewall для выбранного порта
 # ----------------------------------------------------------------------
 configure_firewall() {
+    local WEB_PORT
+    WEB_PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ' || echo "8080")
+
     if command -v ufw >/dev/null 2>&1; then
-        if $SUDO ufw status | grep -q "Status: active"; then
+        if $SUDO ufw status 2>/dev/null | grep -q "Status: active"; then
             log_info "Настройка правил фаервола UFW..."
             $SUDO ufw allow 22/tcp >/dev/null 2>&1 || true
-            $SUDO ufw allow 80/tcp >/dev/null 2>&1 || true
-            $SUDO ufw allow 443/tcp >/dev/null 2>&1 || true
-            # Порт 8000 закрыт от внешнего мира, доступен только локально
-            log_success "Фаервол UFW настроен (порты 80, 443, 22 открыты; порт 8000 изолирован)."
+            $SUDO ufw allow "$WEB_PORT/tcp" >/dev/null 2>&1 || true
+            log_success "Фаервол UFW: открыт порт $WEB_PORT для веб-интерфейса."
         fi
     fi
 }
 
 # ----------------------------------------------------------------------
-# 5. Сборка и запуск приложения через Docker Compose
+# 4. Сборка и запуск приложения через Docker Compose
 # ----------------------------------------------------------------------
 launch_application() {
-    log_info "Сборка и запуск контейнеров LeadHunter Pro..."
+    log_info "Сборка и запуск контейнеров (LeadHunter Backend + Nginx Reverse Proxy)..."
 
     # Остановка старой ревизии если была
     docker compose down --remove-orphans >/dev/null 2>&1 || true
@@ -297,10 +253,13 @@ launch_application() {
     # Сборка и старт в фоне
     docker compose up -d --build
 
-    log_info "Ожидание инициализации сервиса и базы данных..."
+    local WEB_PORT
+    WEB_PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ' || echo "8080")
+
+    log_info "Ожидание инициализации сервиса на порту $WEB_PORT..."
     local HEALTHY=0
-    for i in {1..20}; do
-        if curl -s -f http://127.0.0.1:8000/health >/dev/null 2>&1; then
+    for i in {1..25}; do
+        if curl -s -f "http://127.0.0.1:$WEB_PORT/health" >/dev/null 2>&1; then
             HEALTHY=1
             break
         fi
@@ -308,48 +267,52 @@ launch_application() {
     done
 
     if [ $HEALTHY -eq 1 ]; then
-        log_success "Бэкенд LeadHunter успешно запущен и отвечает на http://127.0.0.1:8000/health"
+        log_success "Система LeadHunter Pro успешно запущена и отвечает на порту $WEB_PORT!"
     else
-        log_warn "Контейнер стартовал, но healthcheck еще не ответил. Проверьте статус через: docker compose logs -f"
+        log_warn "Контейнеры стартовали, ожидается завершение фоновой инициализации."
     fi
 }
 
 # ----------------------------------------------------------------------
-# 6. Финальный баннер с реквизитами доступа
+# 5. Финальный баннер с реквизитами доступа
 # ----------------------------------------------------------------------
 show_final_banner() {
-    local DOMAIN ADMIN_EMAIL ADMIN_PASS TG_TOKEN
-    DOMAIN=$(grep -E '^DOMAIN=' .env | cut -d '=' -f2- | tr -d ' ')
-    ADMIN_EMAIL=$(grep -E '^INITIAL_ADMIN_EMAIL=' .env | cut -d '=' -f2- | tr -d ' ')
-    ADMIN_PASS=$(grep -E '^INITIAL_ADMIN_PASSWORD=' .env | cut -d '=' -f2- | tr -d ' ')
-    TG_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d '=' -f2- | tr -d ' ')
+    local DOMAIN WEB_PORT ADMIN_EMAIL ADMIN_PASS TG_TOKEN
+    DOMAIN=$(grep -E '^DOMAIN=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ')
+    WEB_PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ' || echo "8080")
+    ADMIN_EMAIL=$(grep -E '^INITIAL_ADMIN_EMAIL=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ')
+    ADMIN_PASS=$(grep -E '^INITIAL_ADMIN_PASSWORD=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ')
+    TG_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .env 2>/dev/null | cut -d '=' -f2- | tr -d ' ')
 
     echo ""
     echo -e "${GREEN}${BOLD}======================================================================${NC}"
     echo -e "${GREEN}${BOLD}  🚀 УСТАНОВКА И РАЗВЕРТЫВАНИЕ УСПЕШНО ЗАВЕРШЕНЫ!${NC}"
     echo -e "${GREEN}${BOLD}======================================================================${NC}"
     echo ""
-    echo -e "  🌐 ${BOLD}Веб-интерфейс:${NC}         https://${DOMAIN} (или http://${DOMAIN})"
-    echo -e "  🔐 ${BOLD}Страница входа:${NC}        https://${DOMAIN}/login"
+    echo -e "  🌐 ${BOLD}Веб-интерфейс:${NC}         http://${DOMAIN}:${WEB_PORT} (или через Cloudflare)"
+    echo -e "  🔐 ${BOLD}Страница входа:${NC}        http://${DOMAIN}:${WEB_PORT}/login"
     echo -e "  📧 ${BOLD}Email администратора:${NC}  ${CYAN}${ADMIN_EMAIL}${NC}"
     echo -e "  🔑 ${BOLD}Пароль:${NC}                ${YELLOW}${ADMIN_PASS}${NC}"
     echo ""
     if [ -n "$TG_TOKEN" ]; then
         echo -e "  🤖 ${BOLD}Telegram-бот:${NC}          ${GREEN}Подключен и запущен${NC}"
     else
-        echo -e "  🤖 ${BOLD}Telegram-бот:${NC}          ${YELLOW}Не настроен (добавьте TELEGRAM_BOT_TOKEN в .env)${NC}"
+        echo -e "  🤖 ${BOLD}Telegram-бот:${NC}          ${YELLOW}Не настроен (можно добавить в .env)${NC}"
     fi
     echo ""
-    echo -e "${PURPLE}${BOLD}--- ВАЖНО: Настройка Cloudflare Dashboard ---${NC}"
-    echo -e " 1. В разделе ${BOLD}DNS${NC} включите оранжевое облако (${BOLD}Proxied${NC}) для ${DOMAIN}."
-    echo -e " 2. В разделе ${BOLD}SSL/TLS${NC} выберите режим ${BOLD}Full${NC} или ${BOLD}Flexible${NC} и включите ${BOLD}Always Use HTTPS${NC}."
-    echo -e " 3. В разделе ${BOLD}Network${NC} убедитесь, что включен параметр ${BOLD}WebSockets${NC}."
+    echo -e "${PURPLE}${BOLD}--- Подключение к Cloudflare (Два варианта) ---${NC}"
+    echo -e " 1. ${BOLD}Прямое проксирование порта ${WEB_PORT}:${NC}"
+    echo -e "    Cloudflare нативно поддерживает порт ${WEB_PORT}. Достаточно включить Proxied в DNS."
+    echo -e " 2. ${BOLD}Без указания порта в браузере (через Origin Rules):${NC}"
+    echo -e "    В Cloudflare Dashboard -> ${BOLD}Rules${NC} -> ${BOLD}Origin Rules${NC}:"
+    echo -e "    Создайте правило: 'If Hostname equals ${DOMAIN} -> Rewrite Port to ${WEB_PORT}'."
+    echo -e "    Тогда в браузере сайт будет открываться по красивому адресу: ${BOLD}https://${DOMAIN}${NC}"
     echo ""
-    echo -e "${CYAN}${BOLD}--- Полезные команды управления ---${NC}"
-    echo -e " • Просмотр логов в реальном времени:  ${BOLD}docker compose logs -f${NC}"
-    echo -e " • Перезапуск приложения:             ${BOLD}docker compose restart${NC}"
+    echo -e "${CYAN}${BOLD}--- Управление сервисом ---${NC}"
+    echo -e " • Меню управления:                    ${BOLD}./start.sh${NC}"
+    echo -e " • Добавить пользователя:              ${BOLD}docker compose exec leadhunter python manage_users.py add <email> <pass>${NC}"
+    echo -e " • Логи в реальном времени:            ${BOLD}docker compose logs -f${NC}"
     echo -e " • Остановка приложения:               ${BOLD}docker compose down${NC}"
-    echo -e " • Повторный запуск скрипта:           ${BOLD}./start.sh${NC}"
     echo -e "${GREEN}${BOLD}======================================================================${NC}"
     echo ""
 }
@@ -364,15 +327,14 @@ main() {
     echo -e "${CYAN}${BOLD}======================================================================${NC}"
     echo ""
 
-    # Проверка существующей конфигурации
     if [ -f ".env" ]; then
         log_info "Обнаружен существующий файл .env."
         echo ""
-        echo -e "  ${BOLD}[1]${NC} 🚀 Запустить / Перезапустить сервис (Docker)"
+        echo -e "  ${BOLD}[1]${NC} 🚀 Запустить / Перезапустить сервис"
         echo -e "  ${BOLD}[2]${NC} 👥 Управление пользователями (добавить, список, пароль)"
         echo -e "  ${BOLD}[3]${NC} 📋 Просмотр логов в реальном времени (docker compose logs -f)"
         echo -e "  ${BOLD}[4]${NC} 🛑 Остановить приложение (docker compose down)"
-        echo -e "  ${BOLD}[5]${NC} ⚙️  Мастер полной перенастройки (.env, домен, пароль)"
+        echo -e "  ${BOLD}[5]${NC} ⚙️  Мастер полной перенастройки (.env, порт, домен)"
         echo -e "  ${BOLD}[0]${NC} ❌ Выход"
         echo ""
         read -rp "Выберите действие [1/2/3/4/5/0, Enter=1]: " ACTION
@@ -381,30 +343,22 @@ main() {
         case "$ACTION" in
             1)
                 check_and_install_dependencies
-                configure_nginx
                 configure_firewall
                 launch_application
                 show_final_banner
                 exit 0
                 ;;
             2)
-                # Вызов утилиты управления пользователями
-                if docker compose ps 2>/dev/null | grep -q "leadhunter-pro"; then
-                    docker compose exec leadhunter python manage_users.py
-                elif [ -f ".venv/bin/python" ]; then
-                    .venv/bin/python manage_users.py
-                else
-                    python3 manage_users.py
-                fi
+                docker compose exec leadhunter python manage_users.py
                 exit 0
                 ;;
             3)
-                log_info "Подключение к потоку логов (Ctrl+C для выхода)..."
+                log_info "Подключение к логам (Ctrl+C для выхода)..."
                 docker compose logs -f
                 exit 0
                 ;;
             4)
-                log_info "Остановка сервисов LeadHunter Pro..."
+                log_info "Остановка сервисов..."
                 docker compose down
                 log_success "Контейнеры остановлены."
                 exit 0
@@ -412,7 +366,6 @@ main() {
             5)
                 check_and_install_dependencies
                 configure_environment
-                configure_nginx
                 configure_firewall
                 launch_application
                 show_final_banner
@@ -429,7 +382,6 @@ main() {
     else
         check_and_install_dependencies
         configure_environment
-        configure_nginx
         configure_firewall
         launch_application
         show_final_banner
