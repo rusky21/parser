@@ -42,16 +42,48 @@ log_header()  {
     echo -e "${NC}"
 }
 
+# Функция освобождения 80 порта от сторонних веб-серверов (Apache2, Caddy, зависшие процессы)
+ensure_port_80_free() {
+    # 1. Проверяем и отключаем Apache2, если он установлен и активен
+    if command -v apache2 >/dev/null 2>&1 || systemctl list-unit-files 2>/dev/null | grep -q "apache2.service"; then
+        if systemctl is-active --quiet apache2 2>/dev/null; then
+            log_warn "Обнаружен активный Apache2, занимающий 80 порт. Остановка и отключение Apache2..."
+            $SUDO systemctl stop apache2 2>/dev/null || true
+            $SUDO systemctl disable apache2 2>/dev/null || true
+        fi
+    fi
+
+    # 2. Проверяем любой сторонний процесс, слушающий 80 порт
+    local OCCUPIED_PIDS=()
+    if command -v fuser >/dev/null 2>&1; then
+        OCCUPIED_PIDS+=($($SUDO fuser 80/tcp 2>/dev/null || true))
+    fi
+    if [ ${#OCCUPIED_PIDS[@]} -eq 0 ] && command -v lsof >/dev/null 2>&1; then
+        OCCUPIED_PIDS+=($($SUDO lsof -ti :80 2>/dev/null || true))
+    fi
+
+    for pid in "${OCCUPIED_PIDS[@]}"; do
+        if [ -n "$pid" ]; then
+            local PROC_NAME
+            PROC_NAME=$(ps -p "$pid" -o comm= 2>/dev/null || echo "PID $pid")
+            # Если это не сам Nginx
+            if [[ "$PROC_NAME" != *"nginx"* ]]; then
+                log_warn "Порт 80 занят процессом: $PROC_NAME (PID: $pid). Освобождение порта..."
+                $SUDO kill -9 "$pid" 2>/dev/null || true
+            fi
+        fi
+    done
+    sleep 1
+}
+
 # ----------------------------------------------------------------------
 # 1. Проверка системных пакетов и установка зависимостей
 # ----------------------------------------------------------------------
 check_and_install_dependencies() {
     log_info "Проверка системного окружения Ubuntu..."
 
-    local NEED_APT_UPDATE=0
     local PACKAGES_TO_INSTALL=()
-
-    for pkg in curl openssl ufw sed grep; do
+    for pkg in curl openssl ufw sed grep psmisc lsof; do
         if ! command -v "$pkg" >/dev/null 2>&1; then
             PACKAGES_TO_INSTALL+=("$pkg")
         fi
@@ -60,7 +92,7 @@ check_and_install_dependencies() {
     if [ ${#PACKAGES_TO_INSTALL[@]} -gt 0 ]; then
         log_info "Установка базовых утилит: ${PACKAGES_TO_INSTALL[*]}..."
         $SUDO apt-get update -qq
-        $SUDO apt-get install -y -qq "${PACKAGES_TO_INSTALL[@]}"
+        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq "${PACKAGES_TO_INSTALL[@]}"
         log_success "Базовые утилиты установлены."
     fi
 
@@ -83,20 +115,30 @@ check_and_install_dependencies() {
     if ! docker compose version >/dev/null 2>&1; then
         log_info "Установка плагина docker-compose-plugin..."
         $SUDO apt-get update -qq
-        $SUDO apt-get install -y -qq docker-compose-plugin
+        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq docker-compose-plugin
         log_success "Docker Compose plugin установлен."
     fi
 
-    # Проверка Nginx
+    # Восстановление прерванных установок dpkg, если они были
+    $SUDO dpkg --configure -a 2>/dev/null || true
+
+    # Освобождение 80 порта перед установкой или запуском Nginx
+    ensure_port_80_free
+
+    # Проверка и установка Nginx
     if ! command -v nginx >/dev/null 2>&1; then
         log_warn "Веб-сервер Nginx не найден. Установка Nginx..."
         $SUDO apt-get update -qq
-        $SUDO apt-get install -y -qq nginx
-        $SUDO systemctl enable --now nginx
-        log_success "Nginx успешно установлен и запущен."
-    else
-        log_success "Nginx обнаружен: $(nginx -v 2>&1)"
+        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y nginx || true
+        # Повторное освобождение порта и повторная конфигурация пакета
+        ensure_port_80_free
+        $SUDO dpkg --configure -a 2>/dev/null || true
     fi
+
+    ensure_port_80_free
+    $SUDO systemctl enable nginx 2>/dev/null || true
+    $SUDO systemctl restart nginx 2>/dev/null || true
+    log_success "Nginx проверен и активен."
 }
 
 # ----------------------------------------------------------------------
