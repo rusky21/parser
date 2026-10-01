@@ -5,12 +5,23 @@ services:
       dockerfile: Dockerfile
     container_name: leadhunter-pro
     restart: unless-stopped
+    init: true                      # Предотвращает накопление zombie-процессов Playwright
+    shm_size: '2gb'                 # Защита Chromium от OOM-крэшей на сервере
     ports:
-      - "8000:8000"
+      # ИЗОЛИРОВАНО: Слушает только локальный интерфейс хоста, не торчит в интернет напрямую
+      - "127.0.0.1:8000:8000"
     environment:
       - HEADLESS=1
       - PORT=8000
+      - HOST=0.0.0.0
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - SECRET_KEY=${SECRET_KEY}
+      - INITIAL_ADMIN_EMAIL=${INITIAL_ADMIN_EMAIL:-admin@lead.pro}
+      - INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD:-AdminPass123!_ChangeMe}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_API_SERVER=${TELEGRAM_API_SERVER:-}
     volumes:
+      # Сохранение базы пользователей, лидов и профилей браузера
       - ./leadhunter.db:/app/leadhunter.db
       - ./exports:/app/exports
       - ./browser_profile:/app/browser_profile

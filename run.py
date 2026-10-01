@@ -63,6 +63,8 @@ def main():
             host=host,
             port=port,
             reload=False,
+            proxy_headers=True,
+            forwarded_allow_ips="*",
             loop="asyncio.windows_events:ProactorEventLoop" if (sys.platform == "win32" and sys.version_info < (3, 14)) else "auto"
         )
     except OSError as e:

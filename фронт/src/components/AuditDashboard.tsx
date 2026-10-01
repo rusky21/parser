@@ -16,7 +16,8 @@ import {
   RefreshCw,
   AlertTriangle,
   Trash2,
-  Briefcase
+  Briefcase,
+  LogOut
 } from 'lucide-react';
 import type { Lead, SearchConfig } from '../types';
 import { LeadDetailModal } from './LeadDetailModal';
@@ -194,14 +195,25 @@ export const AuditDashboard: React.FC<AuditDashboardProps> = ({
           </button>
         </div>
 
-        {/* Back to Search Button */}
-        <button
-          onClick={onBackToSearch}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all cursor-pointer"
-        >
-          <Search className="w-3.5 h-3.5" />
-          <span>Поиск</span>
-        </button>
+        {/* Header Right Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onBackToSearch}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all cursor-pointer"
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span>Поиск</span>
+          </button>
+
+          <a
+            href="/logout"
+            title="Выйти из системы"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl transition-all cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Выйти</span>
+          </a>
+        </div>
       </header>
 
       {/* Main Layout Body */}

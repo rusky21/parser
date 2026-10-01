@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, MapPin, ChevronDown, ArrowRight, Briefcase } from 'lucide-react';
+import { Search, MapPin, ChevronDown, ArrowRight, Briefcase, LogOut } from 'lucide-react';
 
 interface SearchHeroProps {
   niche: string;
@@ -55,7 +55,7 @@ export const SearchHero: React.FC<SearchHeroProps> = ({
       }`}
     >
       {/* Top Bar Quick Link */}
-      <div className="absolute top-6 right-6 sm:top-8 sm:right-12 z-30">
+      <div className="absolute top-6 right-6 sm:top-8 sm:right-12 z-30 flex items-center gap-3">
         <button
           type="button"
           onClick={onOpenFl}
@@ -71,6 +71,15 @@ export const SearchHero: React.FC<SearchHeroProps> = ({
           </span>
           <ArrowRight className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
         </button>
+
+        <a
+          href="/logout"
+          title="Выйти из системы"
+          className="flex items-center gap-1.5 px-3.5 py-2.5 bg-red-500/10 hover:bg-red-500/20 active:scale-95 border border-red-500/25 rounded-2xl text-xs font-medium text-red-300 hover:text-red-200 transition-all backdrop-blur-md cursor-pointer shadow-lg"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Выйти</span>
+        </a>
       </div>
 
       <div className="max-w-[480px] w-full">

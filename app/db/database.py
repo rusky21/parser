@@ -64,3 +64,31 @@ async def init_db():
                 await conn.execute(text(mig))
             except Exception:
                 pass
+
+    # Автоматическое создание начального администратора при первом запуске
+    try:
+        import os
+        import logging
+        from sqlalchemy import select, func
+        from app.db.models import User
+        from app.core.security import hash_password
+
+        db_logger = logging.getLogger("leadhunter.db")
+        async with async_session_factory() as session:
+            result = await session.execute(select(func.count(User.id)))
+            users_count = result.scalar_one()
+            if users_count == 0:
+                admin_email = os.environ.get("INITIAL_ADMIN_EMAIL", "admin@lead.pro").strip().lower()
+                admin_password = os.environ.get("INITIAL_ADMIN_PASSWORD", "AdminPass123!_ChangeMe")
+                admin = User(
+                    email=admin_email,
+                    password_hash=hash_password(admin_password),
+                    role="admin",
+                    is_active=True
+                )
+                session.add(admin)
+                await session.commit()
+                db_logger.info(f"🔑 Успешно создан начальный администратор в базе данных: {admin_email}")
+    except Exception as e:
+        import logging
+        logging.getLogger("leadhunter.db").warning(f"Проверка/создание пользователя: {e}")

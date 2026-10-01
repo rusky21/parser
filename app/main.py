@@ -9,10 +9,14 @@ if sys.platform == "win32" and sys.version_info < (3, 14):
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.db.database import init_db
+from app.api.auth import router as auth_router
+from app.core.security import decode_session_token
 from app.api.search import router as search_router
 from app.api.leads import router as leads_router
 from app.api.reports import router as reports_router
@@ -58,16 +62,23 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Настройка CORS для беспрепятственного подключения фронтенда с любого порта
+# Доверенные прокси (Nginx & Cloudflare) для корректной работы X-Forwarded-Proto и редиректов
+app.add_middleware(
+    ProxyHeadersMiddleware,
+    trusted_hosts=["*"]
+)
+
+# Настройка CORS для локальной разработки и взаимодействия
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Подключение роутеров
+app.include_router(auth_router)
 app.include_router(search_router)
 app.include_router(leads_router)
 app.include_router(reports_router)
@@ -76,9 +87,49 @@ app.include_router(geo_router)
 app.include_router(fl_router)
 app.include_router(settings_router)
 
+# Middleware защиты маршрутов (Guard)
+@app.middleware("http")
+async def auth_guard_middleware(request: Request, call_next):
+    path = request.url.path
+
+    # Публичные маршруты, доступные без авторизации
+    public_exact = {"/login", "/logout", "/health", "/favicon.ico"}
+    public_prefixes = ("/assets", "/docs", "/openapi.json", "/redoc")
+
+    if path in public_exact or any(path.startswith(prefix) for prefix in public_prefixes):
+        return await call_next(request)
+
+    # Проверка сессии из Cookie
+    token = request.cookies.get("access_token")
+    user_payload = decode_session_token(token) if token else None
+
+    if not user_payload:
+        # Для REST API возвращаем 401
+        if path.startswith("/api/"):
+            return Response(
+                status_code=401,
+                content='{"detail":"Unauthorized"}',
+                media_type="application/json"
+            )
+
+        # Для веб-страниц — редирект на /login с сохранением returnUrl
+        return_url = request.url.path
+        if request.url.query:
+            return_url += f"?{request.url.query}"
+        return RedirectResponse(f"/login?returnUrl={return_url}", status_code=303)
+
+    request.state.user = user_payload
+    return await call_next(request)
+
 # Глобальный WebSocket для всех событий (FL заказы, смена статусов)
 @app.websocket("/ws/events")
 async def websocket_global_endpoint(websocket: WebSocket):
+    # Проверка сессии по Cookie при handshake
+    token = websocket.cookies.get("access_token")
+    if not token or not decode_session_token(token):
+        await websocket.close(code=4401)
+        return
+
     await ws_manager.connect_global(websocket)
     try:
         while True:
@@ -94,10 +145,15 @@ async def websocket_global_endpoint(websocket: WebSocket):
 # WebSocket для стриминга прогресса конкретной кампании
 @app.websocket("/ws/{campaign_id}")
 async def websocket_endpoint(websocket: WebSocket, campaign_id: int):
+    # Проверка сессии по Cookie при handshake
+    token = websocket.cookies.get("access_token")
+    if not token or not decode_session_token(token):
+        await websocket.close(code=4401)
+        return
+
     await ws_manager.connect(campaign_id, websocket)
     try:
         while True:
-            # Слушаем сообщения от клиента (например, ping/keepalive)
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
