@@ -3,8 +3,10 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# База данных SQLite
+# База данных SQLite (с защитой от создания директории Docker bind mount)
 DB_PATH = (BASE_DIR / "leadhunter.db").resolve()
+if DB_PATH.is_dir():
+    DB_PATH = DB_PATH / "leadhunter.sqlite3"
 DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH.as_posix()}"
 
 # Директория для профилей браузера и экспорта

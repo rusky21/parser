@@ -245,6 +245,18 @@ configure_firewall() {
 # 4. Сборка и запуск приложения через Docker Compose
 # ----------------------------------------------------------------------
 launch_application() {
+    log_info "Подготовка файловой структуры (база данных, папки экспорта)..."
+
+    # Гарантируем, что leadhunter.db является файлом, а не папкой (защита от бага автосоздания папок в Docker)
+    if [ -d "leadhunter.db" ]; then
+        log_warn "Обнаружена папка leadhunter.db вместо файла! Удаляем папку..."
+        rm -rf leadhunter.db
+    fi
+    if [ ! -f "leadhunter.db" ]; then
+        touch leadhunter.db
+    fi
+    mkdir -p exports browser_profile
+
     log_info "Сборка и запуск контейнеров (LeadHunter Backend + Nginx Reverse Proxy)..."
 
     # Остановка старой ревизии если была
@@ -258,7 +270,7 @@ launch_application() {
 
     log_info "Ожидание инициализации сервиса на порту $WEB_PORT..."
     local HEALTHY=0
-    for i in {1..25}; do
+    for i in {1..30}; do
         if curl -s -f "http://127.0.0.1:$WEB_PORT/health" >/dev/null 2>&1; then
             HEALTHY=1
             break
@@ -269,7 +281,14 @@ launch_application() {
     if [ $HEALTHY -eq 1 ]; then
         log_success "Система LeadHunter Pro успешно запущена и отвечает на порту $WEB_PORT!"
     else
-        log_warn "Контейнеры стартовали, ожидается завершение фоновой инициализации."
+        log_error "Сервис не успел ответить на http://127.0.0.1:$WEB_PORT/health"
+        echo ""
+        log_info "Статус контейнеров (docker compose ps):"
+        docker compose ps || true
+        echo ""
+        log_info "Последние логи бэкенда (docker compose logs --tail=40 leadhunter):"
+        docker compose logs --tail=40 leadhunter || true
+        echo ""
     fi
 }
 
