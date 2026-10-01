@@ -325,17 +325,65 @@ main() {
     # Проверка существующей конфигурации
     if [ -f ".env" ]; then
         log_info "Обнаружен существующий файл .env."
-        echo -e "Желаете использовать текущие настройки или переконфигурировать заново?"
-        read -rp "Перенастроить заново? [y/N]: " RECONFIG
-        if [[ "$RECONFIG" =~ ^[YyДд]$ ]]; then
-            check_and_install_dependencies
-            configure_environment
-            configure_nginx
-            configure_firewall
-            launch_application
-            show_final_banner
-            exit 0
-        fi
+        echo ""
+        echo -e "  ${BOLD}[1]${NC} 🚀 Запустить / Перезапустить сервис (Docker)"
+        echo -e "  ${BOLD}[2]${NC} 👥 Управление пользователями (добавить, список, пароль)"
+        echo -e "  ${BOLD}[3]${NC} 📋 Просмотр логов в реальном времени (docker compose logs -f)"
+        echo -e "  ${BOLD}[4]${NC} 🛑 Остановить приложение (docker compose down)"
+        echo -e "  ${BOLD}[5]${NC} ⚙️  Мастер полной перенастройки (.env, домен, пароль)"
+        echo -e "  ${BOLD}[0]${NC} ❌ Выход"
+        echo ""
+        read -rp "Выберите действие [1/2/3/4/5/0, Enter=1]: " ACTION
+        ACTION="${ACTION:-1}"
+
+        case "$ACTION" in
+            1)
+                check_and_install_dependencies
+                configure_nginx
+                configure_firewall
+                launch_application
+                show_final_banner
+                exit 0
+                ;;
+            2)
+                # Вызов утилиты управления пользователями
+                if docker compose ps 2>/dev/null | grep -q "leadhunter-pro"; then
+                    docker compose exec leadhunter python manage_users.py
+                elif [ -f ".venv/bin/python" ]; then
+                    .venv/bin/python manage_users.py
+                else
+                    python3 manage_users.py
+                fi
+                exit 0
+                ;;
+            3)
+                log_info "Подключение к потоку логов (Ctrl+C для выхода)..."
+                docker compose logs -f
+                exit 0
+                ;;
+            4)
+                log_info "Остановка сервисов LeadHunter Pro..."
+                docker compose down
+                log_success "Контейнеры остановлены."
+                exit 0
+                ;;
+            5)
+                check_and_install_dependencies
+                configure_environment
+                configure_nginx
+                configure_firewall
+                launch_application
+                show_final_banner
+                exit 0
+                ;;
+            0)
+                exit 0
+                ;;
+            *)
+                log_error "Неверный выбор."
+                exit 1
+                ;;
+        esac
     else
         check_and_install_dependencies
         configure_environment
@@ -345,13 +393,6 @@ main() {
         show_final_banner
         exit 0
     fi
-
-    # Если .env уже есть и перенастройка не запрошена — проверяем окружение и запускаем/перезапускаем
-    check_and_install_dependencies
-    configure_nginx
-    configure_firewall
-    launch_application
-    show_final_banner
 }
 
 main "$@"

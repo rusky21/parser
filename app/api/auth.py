@@ -288,3 +288,108 @@ async def get_current_user_info(request: Request):
         "email": user_data.get("email"),
         "role": user_data.get("role")
     }
+
+# ====================================================================
+# Управление пользователями (Доступно только администраторам)
+# ====================================================================
+from pydantic import BaseModel, Field
+from app.core.security import hash_password
+
+class UserCreateSchema(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=6)
+    role: str = "admin"
+
+class UserUpdateSchema(BaseModel):
+    password: Optional[str] = Field(None, min_length=6)
+    is_active: Optional[bool] = None
+    role: Optional[str] = None
+
+def require_admin(request: Request):
+    user_data = getattr(request.state, "user", None)
+    if not user_data or user_data.get("role") != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Требуются права администратора")
+    return user_data
+
+@router.get("/api/users")
+async def get_users_list(request: Request, db: AsyncSession = Depends(get_db)):
+    """Получение списка всех пользователей системы"""
+    require_admin(request)
+    result = await db.execute(select(User).order_by(User.id))
+    users = result.scalars().all()
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "role": u.role,
+            "is_active": u.is_active,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None
+        }
+        for u in users
+    ]
+
+@router.post("/api/users", status_code=status.HTTP_201_CREATED)
+async def create_user_api(payload: UserCreateSchema, request: Request, db: AsyncSession = Depends(get_db)):
+    """Создание нового пользователя"""
+    require_admin(request)
+    clean_email = payload.email.strip().lower()
+
+    existing = (await db.execute(select(User).where(User.email == clean_email))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Пользователь с таким email уже существует")
+
+    new_user = User(
+        email=clean_email,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+        is_active=True,
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    return {
+        "status": "success",
+        "user": {
+            "id": new_user.id,
+            "email": new_user.email,
+            "role": new_user.role,
+            "is_active": new_user.is_active
+        }
+    }
+
+@router.patch("/api/users/{user_id}")
+async def update_user_api(user_id: int, payload: UserUpdateSchema, request: Request, db: AsyncSession = Depends(get_db)):
+    """Обновление пароля или статуса пользователя"""
+    require_admin(request)
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+
+    if payload.password:
+        user.password_hash = hash_password(payload.password)
+    if payload.is_active is not None:
+        user.is_active = payload.is_active
+    if payload.role is not None:
+        user.role = payload.role
+
+    await db.commit()
+    return {"status": "updated", "id": user.id, "email": user.email}
+
+@router.delete("/api/users/{user_id}")
+async def delete_user_api(user_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """Удаление пользователя"""
+    current_admin = require_admin(request)
+    if str(user_id) == str(current_admin.get("sub")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя удалить собственную учетную запись")
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+
+    await db.delete(user)
+    await db.commit()
+    return {"status": "deleted", "id": user_id}
+
