@@ -245,17 +245,20 @@ configure_firewall() {
 # 4. Сборка и запуск приложения через Docker Compose
 # ----------------------------------------------------------------------
 launch_application() {
-    log_info "Подготовка файловой структуры (база данных, папки экспорта)..."
+    log_info "Подготовка файловой структуры (папка базы данных data/, exports, browser_profile)..."
 
-    # Гарантируем, что leadhunter.db является файлом, а не папкой (защита от бага автосоздания папок в Docker)
+    # Создаем директории для постоянного хранения данных
+    mkdir -p data exports browser_profile
+
+    # Если на хосте осталась старая база leadhunter.db — переносим её в папку data/
+    if [ -f "leadhunter.db" ] && [ ! -f "data/leadhunter.db" ]; then
+        log_info "Миграция базы данных: перемещаем leadhunter.db в папку data/..."
+        mv leadhunter.db data/leadhunter.db 2>/dev/null || true
+    fi
+    # Если leadhunter.db была создана как папка — удаляем ее
     if [ -d "leadhunter.db" ]; then
-        log_warn "Обнаружена папка leadhunter.db вместо файла! Удаляем папку..."
         rm -rf leadhunter.db
     fi
-    if [ ! -f "leadhunter.db" ]; then
-        touch leadhunter.db
-    fi
-    mkdir -p exports browser_profile
 
     log_info "Сборка и запуск контейнеров (LeadHunter Backend + Nginx Reverse Proxy)..."
 

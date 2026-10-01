@@ -20,8 +20,8 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_API_SERVER=${TELEGRAM_API_SERVER:-}
     volumes:
-      # Сохранение базы пользователей, лидов и профилей браузера
-      - ./leadhunter.db:/app/leadhunter.db
+      # Сохранение базы данных SQLite (включая WAL/SHM журналы), лидов и профилей браузера
+      - ./data:/app/data
       - ./exports:/app/exports
       - ./browser_profile:/app/browser_profile
 

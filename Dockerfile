@@ -22,8 +22,8 @@ RUN playwright install chromium
 # Копируем исходный код бэкенда и собранный фронтенд
 COPY . .
 
-# Создаем папки для экспорта и профиля браузера
-RUN mkdir -p exports browser_profile
+# Создаем папки для базы данных, экспорта и профиля браузера
+RUN mkdir -p data exports browser_profile
 
 EXPOSE 8000
 

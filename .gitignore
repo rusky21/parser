@@ -16,5 +16,6 @@ dist/
 !фронт/dist/
 !фронт/dist/**
 exports/
+data/
 .vscode/
 .idea/

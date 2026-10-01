@@ -13,6 +13,7 @@ node_modules
 фронт/node_modules
 exports
 browser_profile
+data
 *.db
 *.sqlite3
 *.db-journal
